@@ -24,9 +24,9 @@ automatically shrink to fit 192x108 pixels while preserving aspect ratio,
 without cropping. Smaller images keep their original dimensions. Nearest-neighbor
 resizing preserves palette colors and transparent black without introducing halos.
 For example, an 800x480 BMP becomes 180x108 pixels, displayed as 720x432 on the
-full-screen blue background.
+full-screen black background.
 
-Pure black (`RGB 0,0,0`) is transparent and shows the blue background. Up to
+Pure black (`RGB 0,0,0`) is transparent and shows the black background. Up to
 15 other colors are preserved exactly; richer images are quantized to 15
 foreground colors without dithering. Single-foreground-color artwork uses
 compact one-bit tiles; multicolor artwork uses four-bit palette tiles. No
@@ -55,7 +55,7 @@ with `make SPLASH_BMP=tests/color_splash.bmp` to exercise the color renderer.
 
 `rainbow-splash.bmp` is an 800x480 rainbow demo with a white Adafruit logo.
 Build it with `make SPLASH_BMP=assets/rainbow-splash.bmp`. It uses the same
-automatic resizing and palette conversion, displaying at 720x432 on the blue
+automatic resizing and palette conversion, displaying at 720x432 on the black
 background for five seconds. The default logo remains available as `splash.bmp`.
 The rainbow artwork was generated with the built-in image-generation tool,
 using the high-resolution logo from page 3 of the official

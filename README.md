@@ -34,7 +34,7 @@ bank0 image. Local development uses SDCC 4.5.0. Firmware variants get separate
 output directories so changing a board, panel, application or splash setting
 cannot reuse the other variant's object files.
 
-The default build shows a full-screen blue startup background with a centered
+The default build shows a full-screen black startup background with a centered
 white Adafruit flower and wordmark bitmap. Incoming video stays hidden for five
 seconds, then the firmware acquires and displays it. The panel free-runs during startup so
 the screen does not require an input signal. The bitmap is split into tiles
@@ -136,7 +136,7 @@ the source enabled and disabled, followed by handover to video. These checks
 used the Feather DVI source, not a general
 HDMI compatibility suite. Physical cold boot was tested on the initial video
 implementation; the bitmap splash was tested by whole-chip reset. Bitmap upload
-precedes the five-second hold, so the blue background appears before the logo.
+precedes the five-second hold, so the black background appears before the logo.
 The color renderer was checked on the UC-586 with a 15-color chart, transparent
 gaps and return to video. Packing tiles during conversion makes the chart
 visible in the first startup capture, about two seconds after reset.
@@ -146,9 +146,9 @@ including a binary/map check that all six interrupt vectors reach the linked
 handlers and a pixel-by-pixel reconstruction of the bitmap from OSD writes.
 BMP tests cover color preservation, palette reduction, transparent black,
 row/tile/plane ordering, size limits and unchanged generated output.
-The tested default program uses 11,689 bytes of flash and 132 bytes
+The current default build uses 11,693 bytes of flash and 132 bytes
 of XRAM; its 64 KiB bank0 SHA256 is
-`6d7428630add8485d75c3aa2821f6a1541f147390f35aa40de2977f82555ddaf`.
+`eba5e01c6898fa84ca64eb25742fb825bd70e242ce8cac9dbe56af749fcef519`.
 Programming verified all 512 KiB and restored the original protection byte
 `0x0C`. Builds, code and register notes are provided; stock firmware dumps and
 the preserved original flash tail are not distributed.

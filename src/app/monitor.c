@@ -26,13 +26,13 @@ void main(void) {
   edid_publish();
   video_init();
   board_init();
-  video_background(8, 8, 8);
+  video_background(0, 0, 0);
   mcu_write(0xf2, 2);
 #if RTD_SPLASH
   /* The startup screen owns the entire raster. Start video acquisition only
    * after it ends, so incoming pixels cannot appear behind the bitmap.
    */
-  video_background(0, 32, 128);
+  video_background(0, 0, 0);
   osd_init();
   osd_show_splash();
   platform_delay_ms(5000);

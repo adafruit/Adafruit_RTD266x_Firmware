@@ -4,6 +4,7 @@
 #include <stdio.h>
 
 #include "rtd/io.h"
+#include "rtd/board.h"
 #include "rtd/osd.h"
 #include "rtd/panel.h"
 
@@ -145,8 +146,10 @@ int main(void) {
   assert(frame[3][1] == 3); /* Global 2x combines with row 2x for 4x. */
   x_delay = ((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6);
   y_delay = ((unsigned)frame[0][0] << 3) | ((frame[0][2] >> 3) & 7);
-  assert(x_delay * 8 <= panel.hstart + (panel.width - width * 4) / 2);
-  assert(panel.hstart + (panel.width - width * 4) / 2 - x_delay * 8 < 8);
+  assert(x_delay * 8 + BOARD_OSD_X_CORRECTION <=
+         panel.hstart + (panel.width - width * 4) / 2);
+  assert(panel.hstart + (panel.width - width * 4) / 2 -
+         (x_delay * 8 + BOARD_OSD_X_CORRECTION) < 8);
   assert(y_delay * 2 <= panel.vstart + (panel.height - height * 4) / 2);
   assert(panel.vstart + (panel.height - height * 4) / 2 - y_delay * 2 < 2);
 

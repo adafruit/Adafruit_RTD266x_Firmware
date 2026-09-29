@@ -6,7 +6,7 @@ general-purpose RGB framebuffer accessible to the 8051.
 
 ## What is implemented
 
-The startup screen fills the panel with a blue background and a centered white
+The startup screen fills the panel with a black background and a centered white
 Adafruit flower and wordmark bitmap. `src/app/monitor.c` holds that screen for
 five seconds before acquiring input video. `src/rtd/video.c` keeps the display clock and
 timing generator running independently of input sync during this interval.
@@ -25,7 +25,9 @@ OSD palette and SRAM, not a full-color framebuffer.
 The SRAM port accepts Byte0, Byte1, Byte2 while each glyph's first scan line
 occupies bits 23:12. Before global zoom, horizontal frame delay uses four-pixel
 units and vertical delay uses lines. Global 2x zoom doubles those delays as
-well as the glyphs. The startup screen can be disabled at build time.
+well as the glyphs. The UC-586 board profile subtracts a measured 32-panel-pixel
+horizontal offset from the frame delay; using the video origin directly shifted
+the splash to the right. The startup screen can be disabled at build time.
 The supplied 82x64 Adafruit logo is an existing BSD-licensed bitmap, with no
 extracted RTD firmware font or logo. Its pixels are unchanged.
 

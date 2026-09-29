@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "rtd/io.h"
+#include "rtd/board.h"
 #include "rtd/osd.h"
 #include "rtd/panel.h"
 
@@ -66,9 +67,11 @@ static void write_word(uint16_t address, uint8_t a, uint8_t b, uint8_t c) {
 static void set_frame(uint8_t enabled) {
   /* Global 2x zoom also doubles both frame delays. Horizontal delay counts
    * groups of four pixels before zoom; vertical delay counts lines.
-   * Center the bitmap within the active raster, then include blanking.
+   * Center in the active raster, including blanking and the board's measured
+   * horizontal OSD correction. The OSD origin differs from the video origin.
    */
-  uint16_t x = (panel.hstart + (panel.width - SPLASH_WIDTH) / 2) / 8;
+  uint16_t x = (panel.hstart + (panel.width - SPLASH_WIDTH) / 2 -
+                BOARD_OSD_X_CORRECTION) / 8;
   uint16_t y = (panel.vstart + (panel.height - SPLASH_HEIGHT) / 2) / 2;
   write_word(0, (uint8_t)(y >> 3), (uint8_t)(x >> 2),
              (uint8_t)(((x & 3) << 6) | ((y & 7) << 3) | enabled));
