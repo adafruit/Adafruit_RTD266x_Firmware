@@ -65,6 +65,32 @@ Contrast, audio mute, Keep/Fill aspect and the runtime options below are wired
 to the shared settings controller. Volume, rotation and mirror remain disabled.
 The separate P6.4/pin54 backlight power gate passed physical off/wake checks.
 
+Live menus use a centered 720x360 panel with a thin outline, dark navy body,
+separate title strip and cyan page icons. White chevrons and blue row backgrounds
+mark selection; unavailable controls keep gray labels and values. Values align
+at the right edge, and the footer changes to cyan while adjusting a setting.
+The existing diagnostic alphabet stays readable at 2x zoom; original 12x18
+symbols supply the borders and icons. Ten rows of 30 map entries fit below the
+font base at word `0x140`. Text and symbols share a 75-glyph cache, invalidated
+when splash or no-signal bitmap tiles replace it.
+
+The host OSD test can export the rendered SRAM as four 800x480 PPM previews,
+without a board or firmware flash. After `make OUT=build/menu-style check`, run
+`build/menu-style/tests/osd_test build/menu-style/osd-preview`. This produces
+`-live.ppm`, `-edit.ppm`, `-picture.ppm` and `-display.ppm`; values in these
+host previews are samples, not saved settings.
+
+The 2026-09-29 v30 bench build passed full 512 KiB readback and restored flash
+protection to `0x0C` (full-image SHA256
+`80b96393c09178ac4b1c8b2695368e2f9be2b99037fcaa0f74f930f002c1aa22`).
+All six live pages and Picture adjustment matched DDC menu-state readback.
+Camera captures showed the frame, title icons, aligned values and footer;
+a foreground cable obscured part of the left edge and some captures were soft.
+The decoded SRAM previews independently cover complete geometry and palette
+values. No-signal bitmap display, return to video, reopening Picture after the
+bitmap, and automatic menu dismissal also passed. Host checks cover restoring
+the input overlay's white-on-black palette and original font after live menus.
+
 `make MENU_PREVIEW=1` separately cycles through the main menu and Picture, Audio, Display
 and Menu Settings after the startup splash. Each has three sample variants,
 held for 1.5 seconds after its upload, before returning to normal acquisition.
@@ -72,7 +98,7 @@ Font upload adds time between pages. All values are artwork samples: the preview
 does not read buttons or change video, audio, backlight or stored settings.
 The normal build leaves the preview disabled.
 
-The seven-row, 30-column layout is centered at 720x252 panel pixels. It reuses
+The older static preview's seven-row, 30-column layout is centered at 720x252 panel pixels. It reuses
 the diagnostic alphabet, adding a percent glyph, and uses green titles, blue
 selection rows and green/gray slider tracks. The map ends before the font base.
 The variants exercise 0/50/100 percent tracks, mute on/off, alternative aspect
@@ -106,7 +132,7 @@ The converter centers the bitmap in a 7x4 tile rectangle, adding one transparent
 pixel on each side and four above and below. Each OSD row and the global frame
 request 2x scale, producing a 328x256 logo within a 336x288 rectangle. The
 row map starts at SRAM word zero, character selections at word `0x010`, and
-fonts at word `0x100`; they do not overlap. The 28 tiles occupy 756 bytes of
+fonts at word `0x140`; they do not overlap. The 28 tiles occupy 756 bytes of
 dedicated OSD SRAM, not 8051 XRAM. Those tile bytes and a six-byte RGB palette
 are stored in flash. Host tests also receive the original 704-byte row-major
 bitmap; the 8051 build excludes that reference copy.
@@ -115,7 +141,7 @@ Four-bit palette tiles occupy 36 words each: four consecutive one-bit planes,
 with palette bit zero first. Each plane uses the same nine-word packing as a
 monochrome tile. A map entry `0x90, tile_index, 0` selects LUT colors and a
 transparent background; its selector is limited to seven bits. At the current
-font base, the lower 12 KiB SRAM bank holds 106 such tiles. The converter's
+font base, the lower 12 KiB SRAM bank holds 104 such tiles. The converter's
 192x108 limit requires at most 96 tiles. Frame position and 4x scaling are
 identical in both formats. Planar ordering was derived from bounded reference
 data analysis; the project includes only its own color chart and the attributed
