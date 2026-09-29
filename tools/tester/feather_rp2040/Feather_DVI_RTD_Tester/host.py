@@ -1,0 +1,688 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Adafruit Industries
+# SPDX-License-Identifier: MIT
+"""USB host for Feather DVI video tests and RTD266x flash recovery.
+
+Install pyserial, then run `python host.py --help`. Flash commands require the
+display to have its own power and an HDMI cable to the Feather. DDC is not video.
+This module can also be imported: Client.command() exposes the firmware protocol
+for a controlled hardware test. Closing Client does not leave ISP or reboot the
+display; callers of the low-level interface must explicitly finish a safe image.
+"""
+
+import argparse
+import datetime
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import time
+
+import serial
+from serial.tools import list_ports
+
+
+DEFAULT_SERIAL = None
+SECTOR_SIZE = 4096
+PAGE_SIZE = 256
+PATTERNS = ("bars", "checker", "red", "green", "blue", "gray", "black",
+            "white", "grid", "text")
+
+
+class TesterError(Exception):
+    """A failed protocol operation, validation, or safety prerequisite."""
+
+
+def timestamp():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def select_port(port=None, usb_serial=DEFAULT_SERIAL):
+    if port:
+        return port
+    candidates = [p for p in list_ports.comports()
+                  if p.vid == 0x239A and p.pid in (0x8127, 0x814F)
+                  and (not usb_serial or p.serial_number == usb_serial)]
+    if len(candidates) != 1:
+        found = ", ".join(p.device for p in candidates) or "none"
+        raise TesterError("Expected one Feather DVI USB serial device; found "
+                          + found + ". Use --port or --serial.")
+    return candidates[0].device
+
+
+class Client:
+    """One outstanding text command at a time; mutations are never retried."""
+
+    def __init__(self, port=None, usb_serial=DEFAULT_SERIAL):
+        self.port = select_port(port, usb_serial)
+        self.serial = serial.Serial(self.port, 115200, timeout=0.1,
+                                    write_timeout=2)
+        self.buffer = bytearray()
+        self.synchronized = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def close(self):
+        self.serial.close()
+
+    def command(self, command, timeout=5):
+        if not self.synchronized:
+            raise TesterError("USB response state is uncertain; close and reconnect "
+                              "before issuing any further command")
+        if "\n" in command or "\r" in command:
+            raise TesterError("A command must be a single line")
+        packet = (command + "\n").encode("ascii")
+        self.synchronized = False
+        if self.serial.write(packet) != len(packet):
+            raise TesterError("Incomplete USB serial write; command not retried")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if b"\n" not in self.buffer:
+                self.buffer.extend(self.serial.read(
+                    max(1, min(self.serial.in_waiting, 4096))))
+                if len(self.buffer) > 16384:
+                    raise TesterError("Oversized response; connection is unsafe to reuse")
+                continue
+            line, _, tail = self.buffer.partition(b"\n")
+            self.buffer = bytearray(tail)
+            if not line.strip():
+                continue
+            try:
+                response = json.loads(line)
+            except (ValueError, UnicodeDecodeError) as error:
+                raise TesterError("Non-JSON response: " + repr(bytes(line[:160]))) from error
+            if not isinstance(response, dict):
+                raise TesterError("Expected a JSON object response")
+            # Firmware may announce itself when USB opens. Do not mistake its
+            # welcome object for a scan, read, or write acknowledgement.
+            if (response.get("firmware") == "FeatherDVI-RTD"
+                    and (response.get("event") == "ready" or command != "hello")):
+                continue
+            if "ok" not in response:
+                raise TesterError("Missing command acknowledgement")
+            self.synchronized = True
+            if response.get("ok") is not True:
+                raise TesterError(str(response.get("error", "Missing ok:true")))
+            return response
+        raise TesterError("Timeout for " + command.split()[0]
+                          + "; command not retried, connection state uncertain")
+
+    def hello(self, require_isp=False):
+        response = self.command("hello")
+        if (response.get("firmware") != "FeatherDVI-RTD"
+                or response.get("protocol") != 1):
+            raise TesterError("Wrong firmware or unsupported protocol")
+        if require_isp and type(response.get("isp_active")) is not bool:
+            raise TesterError("Firmware did not report a valid ISP state; "
+                              "no automatic ISP exit or reset is safe")
+        return response
+
+    def isp(self):
+        response = self.command("isp")
+        jedec = response.get("jedec", "")
+        size = response.get("size")
+        try:
+            valid_id = len(jedec) == 6 and len(bytes.fromhex(jedec)) == 3
+        except (TypeError, ValueError):
+            valid_id = False
+        if not valid_id or not isinstance(size, int) or isinstance(size, bool):
+            raise TesterError("Invalid flash identification response")
+        if size < SECTOR_SIZE or size > 32 * 1024 * 1024 or size & (size - 1):
+            raise TesterError("Invalid flash capacity")
+        if (not isinstance(response.get("status"), int)
+                or not 0 <= response["status"] <= 255):
+            raise TesterError("Expected one flash status byte")
+        return response
+
+    def read(self, address, length):
+        if address < 0 or not 1 <= length <= PAGE_SIZE:
+            raise TesterError("Read requires a nonnegative address and 1..256 bytes")
+        response = self.command(f"read {address} {length}", timeout=5)
+        if response.get("address") != address:
+            raise TesterError("Read returned the wrong address")
+        return hex_data(response, length)
+
+    def read_flash(self, size, address=0, progress=None):
+        result = bytearray()
+        for offset in range(0, size, PAGE_SIZE):
+            result.extend(self.read(address + offset, min(PAGE_SIZE, size - offset)))
+            if progress and (len(result) % 65536 == 0 or len(result) == size):
+                progress(len(result), size)
+        return bytes(result)
+
+
+def hex_data(response, length):
+    encoded = response.get("data")
+    if not isinstance(encoded, str) or len(encoded) != length * 2:
+        raise TesterError("Wrong response data length")
+    try:
+        result = bytes.fromhex(encoded)
+    except ValueError as error:
+        raise TesterError("Response is not valid hexadecimal") from error
+    if len(result) != length:
+        raise TesterError("Wrong decoded data length")
+    return result
+
+
+def progress(label):
+    def report(done, size):
+        print(f"{label}: {done}/{size} bytes", file=sys.stderr, flush=True)
+    return report
+
+
+def first_difference(expected, actual):
+    for address, (left, right) in enumerate(zip(expected, actual)):
+        if left != right:
+            return address
+    return min(len(expected), len(actual))
+
+
+def compare(expected, actual, label="Flash", base=0):
+    if expected != actual:
+        offset = base + first_difference(expected, actual)
+        raise TesterError(f"{label} differs at 0x{offset:06X}; "
+                          f"expected SHA256 {sha256(expected)}, read {sha256(actual)}")
+
+
+def finish(client):
+    # No automatic retry: a missing reply is not proof that a command failed.
+    # Firmware restores protection, exits ISP and resets the DW8051 itself.
+    client.command("finish", timeout=10)
+
+
+def read_session(client, action):
+    was_active = client.hello(require_isp=True)["isp_active"]
+    entered = False
+    try:
+        info = client.isp()
+        entered = True
+        info["isp_active_at_entry"] = was_active
+        result = action(info)
+    except Exception as error:
+        if was_active or not entered or not client.synchronized:
+            raise TesterError(f"{error}; finish/reset NOT attempted. "
+                              "Pre-existing or unconfirmed ISP state preserved.") from error
+        try:
+            finish(client)
+        except Exception as cleanup:
+            raise TesterError(f"{error}; ISP cleanup also failed: {cleanup}. "
+                              "Protection/ISP state is unconfirmed.") from error
+        raise
+    else:
+        if was_active:
+            print("ISP was active at entry; left active without finish/reset.",
+                  file=sys.stderr)
+        else:
+            finish(client)
+        return result
+
+
+def metadata_path(path):
+    return path.with_name(path.name + ".json")
+
+
+def require_new(path, include_metadata=True):
+    targets = [path, metadata_path(path)] if include_metadata else [path]
+    for target in targets:
+        if target.exists():
+            raise TesterError("Refusing to overwrite " + str(target))
+    if not path.parent.is_dir():
+        raise TesterError("Output directory does not exist: " + str(path.parent))
+
+
+def write_json_new(path, value):
+    with path.open("x", encoding="utf-8", newline="\n") as output:
+        json.dump(value, output, indent=2)
+        output.write("\n")
+
+
+def save_binary(path, data, metadata):
+    require_new(path)
+    with path.open("xb") as output:
+        output.write(data)
+    metadata.update({"file": path.name, "size": len(data), "sha256": sha256(data),
+                     "created_utc": timestamp()})
+    write_json_new(metadata_path(path), metadata)
+
+
+def read_image(path):
+    data = path.read_bytes()
+    sidecar = metadata_path(path)
+    if sidecar.exists():
+        metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+        recorded = metadata.get("sha256")
+        if recorded is not None and (not isinstance(recorded, str)
+                                     or recorded.lower() != sha256(data)):
+            raise TesterError("Image does not match its SHA256 metadata: " + str(path))
+    return data
+
+
+def detailed_timing(data):
+    clock = int.from_bytes(data[:2], "little") * 10000
+    if not clock:
+        return None
+    horizontal = data[2] + ((data[4] & 0xF0) << 4)
+    hblank = data[3] + ((data[4] & 0x0F) << 8)
+    vertical = data[5] + ((data[7] & 0xF0) << 4)
+    vblank = data[6] + ((data[7] & 0x0F) << 8)
+    hfront = data[8] + ((data[11] & 0xC0) << 2)
+    hsync = data[9] + ((data[11] & 0x30) << 4)
+    vfront = (data[10] >> 4) + ((data[11] & 0x0C) << 2)
+    vsync = (data[10] & 0x0F) + ((data[11] & 0x03) << 4)
+    total = (horizontal + hblank) * (vertical + vblank)
+    result = {"pixel_clock_hz": clock, "width": horizontal, "height": vertical,
+            "horizontal_blanking": hblank, "vertical_blanking": vblank,
+            "horizontal_front_porch": hfront, "horizontal_sync": hsync,
+            "horizontal_back_porch": hblank - hfront - hsync,
+            "vertical_front_porch": vfront, "vertical_sync": vsync,
+            "vertical_back_porch": vblank - vfront - vsync,
+            "refresh_hz": round(clock / total, 5) if total else None,
+            "interlaced": bool(data[17] & 0x80), "flags": data[17]}
+    if result["interlaced"]:
+        # EDID encodes vertical active/blanking/porches per field. The two
+        # fields add one half-line each, making the complete frame total odd.
+        # Keep the encoded porches explicit rather than assigning that extra
+        # half-line to a porch that the descriptor does not specify.
+        frame_lines = 2 * (vertical + vblank) + 1
+        frame_pixels = (horizontal + hblank) * frame_lines
+        frame_rate = clock / frame_pixels if frame_pixels else None
+        result.update({
+            "height": 2 * vertical,
+            "vertical_blanking": 2 * vblank + 1,
+            "encoded_vertical_per_field": {
+                "active_lines": vertical, "blanking_lines": vblank,
+                "front_porch_lines": result.pop("vertical_front_porch"),
+                "sync_lines": result.pop("vertical_sync"),
+                "back_porch_lines": result.pop("vertical_back_porch"),
+            },
+            "additional_half_line_per_field": 0.5,
+            "field_total_lines": frame_lines / 2,
+            "frame_total_lines": frame_lines,
+            "field_rate_hz": round(2 * frame_rate, 5) if frame_rate else None,
+            "frame_rate_hz": round(frame_rate, 5) if frame_rate else None,
+            "refresh_hz": round(2 * frame_rate, 5) if frame_rate else None,
+        })
+    return result
+
+
+def decode_edid(blocks):
+    base = blocks[0]
+    manufacturer = int.from_bytes(base[8:10], "big")
+    result = {
+        "header_valid": base[:8] == bytes.fromhex("00ffffffffffff00"),
+        "manufacturer": "".join(chr(64 + ((manufacturer >> shift) & 31))
+                                for shift in (10, 5, 0)),
+        "product_code": int.from_bytes(base[10:12], "little"),
+        "serial_number": int.from_bytes(base[12:16], "little"),
+        "version": f"{base[18]}.{base[19]}", "extension_count": base[126],
+        "checksums_valid": [sum(block) % 256 == 0 for block in blocks],
+        "detailed_timings": [],
+    }
+    for offset in range(54, 126, 18):
+        descriptor = base[offset:offset + 18]
+        timing = detailed_timing(descriptor)
+        if timing:
+            result["detailed_timings"].append({"block": 0, **timing})
+        elif descriptor[:3] == b"\0\0\0" and descriptor[3] in (0xFC, 0xFF):
+            key = "display_name" if descriptor[3] == 0xFC else "display_serial"
+            result[key] = descriptor[5:18].decode("ascii", errors="replace").strip()
+    for number, block in enumerate(blocks[1:], 1):
+        if block[0] == 2 and 4 <= block[2] <= 109:
+            for offset in range(block[2], 110, 18):
+                timing = detailed_timing(block[offset:offset + 18])
+                if timing:
+                    result["detailed_timings"].append({"block": number, **timing})
+    return result
+
+
+def dump_flash(client, output, reads=2):
+    require_new(output)
+    if reads < 2:
+        raise TesterError("A backup requires at least two independent reads")
+
+    def action(info):
+        first = None
+        hashes = []
+        for index in range(reads):
+            data = client.read_flash(info["size"], progress=progress(f"Read {index + 1}"))
+            hashes.append(sha256(data))
+            if first is None:
+                first = data
+            else:
+                compare(first, data, "Repeated backup reads")
+        return first, {"operation": "dump", "flash": info, "read_sha256": hashes,
+                       "matching_reads": reads, "port": client.port}
+
+    data, metadata = read_session(client, action)
+    save_binary(output, data, metadata)
+    return metadata
+
+
+def verify_flash(client, image):
+    expected = read_image(image)
+
+    def action(info):
+        if len(expected) != info["size"]:
+            raise TesterError("Image size does not match identified flash capacity")
+        actual = client.read_flash(info["size"], progress=progress("Verify"))
+        compare(expected, actual)
+        return {"operation": "verify", "verified": True, "flash": info,
+                "size": len(actual), "sha256": sha256(actual), "created_utc": timestamp()}
+
+    return read_session(client, action)
+
+
+def ddc_config(client):
+    """Read the fixed whitelist with the existing ISP ownership safeguards."""
+    def action(info):
+        response = client.command("ddc-config")
+        registers = response.get("registers")
+        channels = response.get("channel_access")
+        expected = {"DDC_RAM_PARTITION", "PIN_SHARE_CONTROL14", "WDT_CONTROL",
+                    "ISP_SLAVE_ADDRESS", "ISP_MCU_CONTROL", "ISP_MCU_CLOCK_CONTROL",
+                    "BANK_CONTROL", "BANK_XDATA_START", "BANK_XDATA_SELECT",
+                    "BANK_PBANK_SWITCH", "REV_DUMMY2", "REV_DUMMY6"}
+        expected.update(f"DDC{channel}_CONTROL{control}"
+                        for channel in range(1, 4) for control in range(3))
+        if not isinstance(registers, dict) or set(registers) != expected:
+            raise TesterError("Incomplete DDC configuration register snapshot")
+        if not isinstance(channels, dict) or set(channels) != {"FFEC", "FFED"}:
+            raise TesterError("Incomplete DDC channel-access snapshot")
+        for value in list(registers.values()) + list(channels.values()):
+            hex_data({"data": value}, 1)
+        response["isp_active_at_entry"] = info["isp_active_at_entry"]
+        return response
+
+    return read_session(client, action)
+
+
+def program_flash(client, target, backup, recover=False):
+    """Program only changed sectors. On any write failure, stay in ISP."""
+    if recover and target != backup:
+        raise TesterError("Recovery target must exactly equal the verified backup; "
+                          "finish/reset NOT attempted")
+    hello = client.hello(require_isp=True)
+    if hello.get("video") != "off":
+        raise TesterError("Programming requires video off; use 'mode off' first "
+                          "and reconnect. ISP/finish/reset NOT attempted.")
+    was_active = hello["isp_active"]
+    entered = False
+    write_started = False
+    failed_sector = None
+    info = None
+    try:
+        info = client.isp()
+        entered = True
+        info["isp_active_at_entry"] = was_active
+        if len(target) != info["size"] or len(backup) != info["size"]:
+            raise TesterError("Target and backup must exactly match the flash capacity")
+        current = client.read_flash(info["size"], progress=progress("Preflight"))
+        if not recover and current != backup and current != target:
+            raise TesterError("Current flash matches neither backup nor target. "
+                              "For a partial failed image, use --recover with "
+                              "the verified backup as both image and --backup.")
+        sectors = [address for address in range(0, len(target), SECTOR_SIZE)
+                   if current[address:address + SECTOR_SIZE]
+                   != target[address:address + SECTOR_SIZE]]
+        pages_written = 0
+        if sectors:
+            client.command("arm " + info["jedec"].upper())
+            client.command("unlock", timeout=10)
+        for address in sectors:
+            failed_sector = address
+            write_started = True  # An erase may succeed even if its reply is lost.
+            print(f"Programming sector 0x{address:06X}", file=sys.stderr, flush=True)
+            client.command(f"erase {address}", timeout=30)
+            sector = target[address:address + SECTOR_SIZE]
+            for offset in range(0, SECTOR_SIZE, PAGE_SIZE):
+                page = sector[offset:offset + PAGE_SIZE]
+                if page != b"\xff" * PAGE_SIZE:
+                    client.command(f"page {address + offset} {page.hex()}", timeout=30)
+                    pages_written += 1
+            actual = client.read_flash(SECTOR_SIZE, address=address)
+            compare(sector, actual, "Programmed sector", base=address)
+        actual = client.read_flash(info["size"], progress=progress("Full readback"))
+        compare(target, actual, "Final full readback")
+    except Exception as error:
+        if write_started:
+            raise TesterError(
+                f"Programming failed at/after sector 0x{failed_sector:06X}: {error}. "
+                "ISP LEFT ACTIVE; protection restoration and reboot NOT attempted. "
+                "Keep display powered; recover the image from the verified backup "
+                "before issuing finish/reset.") from error
+        if recover or was_active or not entered or not client.synchronized:
+            raise TesterError(f"{error}; finish/reset NOT attempted. "
+                              "Recovery, pre-existing or unconfirmed ISP state "
+                              "preserved.") from error
+        try:
+            finish(client)
+        except Exception as cleanup:
+            raise TesterError(f"{error}; ISP cleanup also failed: {cleanup}. "
+                              "Protection/ISP state is unconfirmed.") from error
+        raise
+    # Only a complete verified image may be allowed to boot. A cleanup failure
+    # must not turn a successful byte comparison into an unsupported claim.
+    try:
+        finish(client)
+    except Exception as error:
+        raise TesterError("Image verified, but protection restoration/ISP exit/reset "
+                          "was not fully confirmed: " + str(error)) from error
+    return {"operation": "program", "recovery": recover, "verified": True, "flash": info,
+            "backup_sha256": sha256(backup), "sha256": sha256(target),
+            "size": len(target), "changed_sectors": sectors,
+            "pages_written": pages_written, "writes_skipped": not sectors,
+            "protection_restored_and_reset": True, "created_utc": timestamp()}
+
+
+def restore_protection(port, usb_serial, image, status, receipt):
+    """Recover a lost RAM protection setting only after exact full-image proof."""
+    require_new(receipt, include_metadata=False)
+    result = {"operation": "restore-protection", "image": str(image),
+              "image_sha256": None, "before_status": None, "target_status": status,
+              "verified": False, "protection_write_attempted": False,
+              "finish_attempted": False, "protection_restored_and_reset": False}
+    try:
+        expected = read_image(image)
+        result.update({"image_sha256": sha256(expected), "size": len(expected)})
+        if len(expected) != 512 * 1024:
+            raise TesterError("Protection recovery requires an exact 512 KiB image")
+        if type(status) is not int or not 0 <= status <= 255 or status & 3 or not status & 0x1c:
+            raise TesterError("Status must be a byte with nonzero BP bits and WIP/WEL clear")
+        with Client(port, usb_serial) as client:
+            result["port"] = client.port
+            hello = client.hello(require_isp=True)
+            if hello.get("video") != "off":
+                raise TesterError("Protection recovery requires video off; use 'mode off' "
+                                  "first and reconnect")
+            result["isp_active_at_entry"] = hello["isp_active"]
+            info = client.isp()
+            result.update({"flash": info, "before_status": info["status"]})
+            if info["jedec"].upper() != "EF3013" or info["size"] != len(expected):
+                raise TesterError("Protection recovery requires Winbond W25X40 EF3013")
+            if (status ^ info["status"]) & 0xe0:
+                raise TesterError("Only BP bits may change; preserve current TB/SRP/reserved bits")
+            actual = client.read_flash(info["size"], progress=progress("Recovery verify"))
+            compare(expected, actual, "Protection recovery full image")
+            result.update({"verified": True, "read_sha256": sha256(actual)})
+            client.command("arm " + info["jedec"].upper())
+            result["protection_write_attempted"] = True
+            client.command(f"restore-protection {status}", timeout=10)
+            confirmed = client.isp()
+            result["after_status"] = confirmed["status"]
+            if (confirmed["jedec"].upper() != info["jedec"].upper()
+                    or confirmed["size"] != info["size"]
+                    or confirmed["status"] & 0xfc != status & 0xfc
+                    or confirmed["status"] & 3):
+                raise TesterError("Protection readback does not match requested stable status")
+            result["finish_attempted"] = True
+            finish(client)
+            result["protection_restored_and_reset"] = True
+    except (Exception, KeyboardInterrupt) as error:
+        result["error"] = str(error) or type(error).__name__
+        if isinstance(error, KeyboardInterrupt):
+            raise
+        raise TesterError(f"{error}; no additional finish/reset attempted. "
+                          "Keep the display powered and inspect the recovery receipt.") from error
+    finally:
+        result["created_utc"] = timestamp()
+        write_json_new(receipt, result)
+    result["receipt"] = str(receipt)
+    return result
+
+
+def capture(output, device):
+    require_new(output)
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise TesterError("ffmpeg is not installed or is not on PATH")
+    subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-n", "-f",
+                    "dshow", "-vcodec", "mjpeg", "-video_size", "1920x1080",
+                    "-framerate", "30", "-i", "video=" + device, "-an", "-ss", "1",
+                    "-frames:v", "1", str(output)], check=True, timeout=30)
+    data = output.read_bytes()
+    metadata = {"operation": "capture", "device": device, "file": output.name,
+                "size": len(data), "sha256": sha256(data), "created_utc": timestamp()}
+    write_json_new(metadata_path(output), metadata)
+    return metadata
+
+
+def argument_parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--port", help="COM port; otherwise discover the Feather by USB ID")
+    parser.add_argument("--serial", default=DEFAULT_SERIAL, help="Feather USB serial number")
+    sub = parser.add_subparsers(dest="action", required=True)
+    sub.add_parser("info", help="Firmware version and current video mode")
+    sub.add_parser("scan", help="Scan the HDMI DDC bus")
+    sub.add_parser("ddc-config", help="Read fixed DDC registers in ISP; preserve existing ISP")
+    edid = sub.add_parser("edid", help="Read base EDID and all advertised extension blocks")
+    edid.add_argument("output", type=Path, help="New binary EDID file")
+    dump = sub.add_parser("dump", help="Read flash at least twice and save only matching data")
+    dump.add_argument("output", type=Path)
+    dump.add_argument("--reads", type=int, default=2)
+    verify = sub.add_parser("verify", help="Compare every flash byte with an image")
+    verify.add_argument("image", type=Path)
+    program = sub.add_parser("program", help="Program changed sectors and verify every byte")
+    program.add_argument("image", type=Path)
+    program.add_argument("--backup", type=Path, required=True,
+                         help="Verified full original/current image, checked before writes")
+    program.add_argument("--allow-write", action="store_true", required=True,
+                         help="Explicitly authorize flash erase/program operations")
+    program.add_argument("--recover", action="store_true",
+                         help="Restore a partial failed image; image must equal --backup")
+    program.add_argument("--receipt", type=Path, help="New JSON receipt (default: timestamped)")
+    protection = sub.add_parser("restore-protection",
+                                help="Verify a complete image, then recover recorded BP protection")
+    protection.add_argument("image", type=Path, help="Exact current 512 KiB flash image")
+    protection.add_argument("--status", type=lambda value: int(value, 0), required=True,
+                            help="Recorded status byte, e.g. 0x0c; only BP bits may change")
+    protection.add_argument("--allow-write", action="store_true", required=True)
+    protection.add_argument("--receipt", type=Path, required=True, help="New success/failure JSON receipt")
+    pattern = sub.add_parser("pattern", help="Select the video test pattern")
+    pattern.add_argument("name", choices=PATTERNS)
+    mode = sub.add_parser("mode", help="Change video mode and reboot the Feather")
+    mode.add_argument("name", choices=("640", "800", "panel", "off"))
+    sub.add_parser("reset", help="Reset the RTD controller; use only with a valid flash image")
+    sub.add_parser("reset-chip", help="Request RTD whole-chip SOF_RST; valid flash required")
+    camera = sub.add_parser("capture", help="Capture one webcam PNG using ffmpeg DirectShow")
+    camera.add_argument("output", type=Path)
+    camera.add_argument("--device", default="USB Camera")
+    return parser
+
+
+def main(argv=None):
+    args = argument_parser().parse_args(argv)
+    try:
+        if args.action == "capture":
+            result = capture(args.output, args.device)
+        elif args.action == "restore-protection":
+            result = restore_protection(args.port, args.serial, args.image,
+                                        args.status, args.receipt)
+        else:
+            # Refuse existing paths before even opening USB.
+            if args.action in ("dump", "edid"):
+                require_new(args.output)
+            if args.action == "program":
+                target = read_image(args.image)
+                backup = read_image(args.backup)
+                receipt = args.receipt or args.image.with_name(
+                    args.image.name + ".program-" + datetime.datetime.now(
+                        datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + ".json")
+                require_new(receipt, include_metadata=False)
+            with Client(args.port, args.serial) as client:
+                hello = client.hello()
+                if args.action == "info":
+                    result = hello
+                elif args.action == "scan":
+                    result = client.command("scan")
+                    addresses = result.get("addresses")
+                    if (not isinstance(addresses, list)
+                            or any(type(address) is not int or not 0 <= address < 128
+                                   for address in addresses)):
+                        raise TesterError("Invalid I2C scan response")
+                elif args.action == "ddc-config":
+                    result = ddc_config(client)
+                elif args.action == "edid":
+                    blocks = []
+                    count = 1
+                    while len(blocks) < count:
+                        number = len(blocks)
+                        response = client.command(f"edid {number}")
+                        if response.get("block") != number:
+                            raise TesterError("Wrong EDID block in response")
+                        blocks.append(hex_data(response, 128))
+                        count = 1 + blocks[0][126]
+                        if count > 8:
+                            raise TesterError("EDID advertises more than the eight blocks "
+                                              "supported by this firmware")
+                    result = {"operation": "edid", **decode_edid(blocks)}
+                    save_binary(args.output, b"".join(blocks), result)
+                    if not result["header_valid"] or not all(result["checksums_valid"]):
+                        print("Warning: EDID saved, but header/checksum is invalid",
+                              file=sys.stderr)
+                elif args.action == "dump":
+                    result = dump_flash(client, args.output, args.reads)
+                elif args.action == "verify":
+                    result = verify_flash(client, args.image)
+                elif args.action == "program":
+                    try:
+                        result = program_flash(client, target, backup, recover=args.recover)
+                    except Exception as error:
+                        write_json_new(receipt, {
+                            "operation": "program", "recovery": args.recover,
+                            "verified": False,
+                            "error": str(error), "backup": str(args.backup),
+                            "backup_sha256": sha256(backup), "target": str(args.image),
+                            "target_sha256": sha256(target), "created_utc": timestamp()})
+                        raise
+                    result.update({"backup": str(args.backup), "target": str(args.image),
+                                   "port": client.port})
+                    write_json_new(receipt, result)
+                    result["receipt"] = str(receipt)
+                elif args.action in ("pattern", "mode"):
+                    result = client.command(args.action + " " + args.name)
+                else:
+                    result = client.command(args.action, timeout=15)
+        print(json.dumps(result, indent=2))
+        return 0
+    except (TesterError, OSError, ValueError, serial.SerialException,
+            subprocess.SubprocessError) as error:
+        print("Error: " + str(error), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("Interrupted. If a write was active, keep the display powered and "
+              "recover its verified image before finish/reset.", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -109,7 +109,7 @@ controls and arbitrary video modes are not implemented.
 
 ## Programming
 
-Use the [Feather DVI tester/programmer](https://github.com/adafruit/Adafruit_Arduino_Tester_Code/pull/23).
+Use the included [Feather tester/programmer](tools/tester/README.md).
 Its RP2350 HSTX variant supports both HDMI audio testing and programming through
 the same connected HDMI cable. Select `mode off` before programming and return
 to `mode 640` afterward; mode changes reboot the Feather.
@@ -130,7 +130,8 @@ with open("firmware-full.bin", "xb") as output:
     output.write(bank0 + original[65536:])
 ```
 
-From the tester directory, use its `host.py`:
+From `tools/tester/feather_rp2040/Feather_DVI_RTD_Tester`, use the shared
+`host.py` for either Feather:
 
 ```sh
 python host.py program /path/to/firmware-full.bin \
