@@ -178,8 +178,8 @@ handlers and a pixel-by-pixel reconstruction of the bitmap from OSD writes.
 BMP tests cover color preservation, palette reduction, transparent black,
 row/tile/plane ordering, size limits and unchanged generated output.
 The centered 640x480 default passes host register checks and the SDCC build;
-its physical sidebar alignment still needs a board test. Earlier builds'
-programming verified all 512 KiB and restored the original protection byte
+on 2026-09-29, a UC-586 camera capture confirmed the centered grid and black
+sidebars. Programming verified all 512 KiB and restored the original protection byte
 `0x0C`. Builds, code and register notes are provided; stock firmware dumps and
 the preserved original flash tail are not distributed.
 

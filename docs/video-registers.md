@@ -100,7 +100,10 @@ totals and the OSD origin stay unchanged. Mode application sets the background
 to black. Both bypassed axes receive 0xFFFFF; the full line buffer remains
 enabled, and the downscaler and its auxiliary buffer are bypassed.
 Host checks cover margins, unity factors, black background and transitions
-among the VGA/native/CVT profiles. Physical sidebar alignment is pending.
+among the VGA/native/CVT profiles. On 2026-09-29, the UC-586 displayed the HSTX
+640x480 grid centered with black sidebars and both vertical red border lines
+visible. Full 512 KiB readback matched and protection returned to 0x0C. This
+bench check covered VGA; the native/CVT transitions were checked on the host.
 
 The new filter is a triangular linear-interpolation kernel generated at startup:
 for `p=0..15`, the stored tap weights are
