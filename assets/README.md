@@ -19,12 +19,19 @@ make SPLASH_BMP=path/to/my-logo.bmp
 Switching files is detected even when the selected BMP has an older timestamp.
 Running ordinary `make` afterward selects the supplied default again.
 
-Use a BMP between 1x1 and 192x108 pixels. Both monochrome and color BMPs work.
+Use a monochrome or color BMP, including 16-bit RGB565 files. Larger images
+automatically shrink to fit 192x108 pixels while preserving aspect ratio,
+without cropping. Smaller images keep their original dimensions. Nearest-neighbor
+resizing preserves palette colors and transparent black without introducing halos.
+For example, an 800x480 BMP becomes 180x108 pixels, displayed as 720x432 on the
+full-screen blue background.
+
 Pure black (`RGB 0,0,0`) is transparent and shows the blue background. Up to
 15 other colors are preserved exactly; richer images are quantized to 15
 foreground colors without dithering. Single-foreground-color artwork uses
 compact one-bit tiles; multicolor artwork uses four-bit palette tiles. No
-automatic resizing occurs. Retain the appropriate license for your own artwork.
+RGB565 framebuffer is used: 16-bit input is converted to this OSD palette.
+Retain the appropriate license for your own artwork.
 
 The converter uses Python 3 and Pillow (`pip3 install Pillow`). It can also be
 run directly: `python3 tools/bmp_to_header.py input.bmp output.h`. It preserves
@@ -37,7 +44,7 @@ The default firmware asset is 756 tile bytes plus a six-byte palette.
 The converter pads and centers the image within 12x18 tiles; the driver displays those
 tiles at 4x scale. The supplied logo appears as 328x256 pixels inside a
 336x288 tile rectangle. On the current 800x480 panel, artwork up to 192x108
-pixels fits at that scale. Conversion rejects larger images, and the build
+pixels fits at that scale. Conversion scales larger images down, and the build
 checks data length and SRAM bounds. The largest color image uses 96 tiles and
 10,368 bytes of dedicated OSD SRAM. An image whose scaled tile rectangle
 exceeds the panel is not shown.

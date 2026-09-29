@@ -42,7 +42,9 @@ stored in the scaler's OSD SRAM. Replace `assets/splash.bmp` and run `make` to
 customize it; the build generates the bitmap header automatically using Pillow.
 BMPs can contain up to 15 visible colors plus transparent black; richer images
 are quantized automatically. Use `make SPLASH_BMP=path/to/my-logo.bmp` to select
-another file. Artwork can be up to 192x108 pixels and is displayed at 4x scale.
+another file. Larger BMPs, including full-size 16-bit RGB565 images, automatically
+shrink to fit 192x108 pixels without cropping and are displayed at 4x scale.
+RGB565 input is converted to the OSD palette; this is not a full-color framebuffer.
 See the [artwork format and attribution](assets/README.md). Use
 `make SPLASH=0` to omit it; that build uses a separate `-splash0` directory.
 

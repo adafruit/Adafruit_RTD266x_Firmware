@@ -4,6 +4,7 @@
 import os
 from pathlib import Path
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -147,13 +148,48 @@ class BitmapTest(unittest.TestCase):
         self.convert()
         self.check_header(192, 108, bytes((255,)) * (24 * 108))
 
+    def test_large_images_fit_without_cropping(self):
+        for original, fitted in (((800, 480), (180, 108)),
+                                 ((480, 800), (65, 108)),
+                                 ((1600, 200), (192, 24)),
+                                 ((193, 1), (192, 1)),
+                                 ((1, 109), (1, 108))):
+            with self.subTest(original=original):
+                Image.new("RGB", original, "white").save(self.source)
+                self.convert()
+                self.check_header(*fitted)
+
+    def write_rgb565(self, width, rows):
+        # Real 16-bit BI_BITFIELDS BMP, including bottom-up rows and DWORD padding.
+        stride = (width * 2 + 3) & ~3
+        data = b"".join(row.ljust(stride, b"\0") for row in reversed(rows))
+        offset = 14 + 40 + 12
+        header = struct.pack("<2sIHHI", b"BM", offset + len(data), 0, 0, offset)
+        info = struct.pack("<IiiHHIIiiII", 40, width, len(rows), 1, 16, 3,
+                           len(data), 0, 0, 0, 0)
+        masks = struct.pack("<III", 0xf800, 0x07e0, 0x001f)
+        self.source.write_bytes(header + info + masks + data)
+
+    def test_rgb565_colors_orientation_and_row_padding(self):
+        self.write_rgb565(3, [struct.pack("<3H", 0xf800, 0x07e0, 0x001f),
+                              struct.pack("<3H", 0, 0xffff, 0xf800)])
+        self.convert()
+        self.check_header(3, 2, bytes((0x32, 0x10, 0x04, 0x30)), bpp=4,
+                          palette=[(0, 0, 0), (0, 0, 255), (0, 255, 0),
+                                   (255, 0, 0), (255, 255, 255)])
+
+    def test_full_panel_rgb565_scales_with_exact_colors_and_black_key(self):
+        top = struct.pack("<H", 0x001f) * 400 + struct.pack("<H", 0xf800) * 400
+        bottom = bytes(800) + struct.pack("<H", 0x07e0) * 400
+        self.write_rgb565(800, [top] * 240 + [bottom] * 240)
+        self.convert()
+        expected = (bytes((0x11,)) * 45 + bytes((0x33,)) * 45) * 54
+        expected += (bytes(45) + bytes((0x22,)) * 45) * 54
+        self.check_header(180, 108, expected, bpp=4,
+                          palette=[(0, 0, 0), (0, 0, 255), (0, 255, 0), (255, 0, 0)])
+
     def test_rejected_inputs_preserve_output(self):
         self.output.write_text("preserve existing header")
-        for dimensions in ((193, 1), (1, 109)):
-            with self.subTest(dimensions=dimensions):
-                Image.new("RGB", dimensions).save(self.source)
-                self.convert(success=False)
-                self.assertEqual(self.output.read_text(), "preserve existing header")
         Image.new("RGB", (9, 2)).save(self.source, format="PNG")
         self.convert(success=False)  # File signature, not just .bmp suffix.
         self.assertEqual(self.output.read_text(), "preserve existing header")

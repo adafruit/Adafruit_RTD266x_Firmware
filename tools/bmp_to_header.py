@@ -11,11 +11,13 @@ def convert(source, output):
     with Image.open(source) as image:
         if image.format != "BMP":
             raise ValueError("Input must be a BMP file")
+        # Decode indexed and RGB565 BMPs before resizing or applying the black key.
+        image = image.convert("RGB")
+        # Fit without cropping or enlarging small artwork. Nearest-neighbor
+        # preserves exact palette colors and avoids halos around transparent black.
+        image.thumbnail((192, 108), Image.Resampling.NEAREST)
         width, height = image.size
-        if not (1 <= width <= 192 and 1 <= height <= 108):
-            raise ValueError("BMP must be between 1x1 and 192x108 pixels (displayed at 4x)")
-        # Decode indexed BMP palettes before applying the exact black key.
-        rgb_bytes = image.convert("RGB").tobytes()
+        rgb_bytes = image.tobytes()
         pixels = [tuple(rgb_bytes[offset:offset + 3])
                   for offset in range(0, len(rgb_bytes), 3)]
 
