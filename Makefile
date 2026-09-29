@@ -5,6 +5,7 @@ PANEL ?= rgb800x480
 APP ?= monitor
 SPLASH ?= 1
 SPLASH_BMP ?= assets/splash.bmp
+NO_SIGNAL_BMP ?= assets/no-signal.bmp
 TRACE ?= 0
 SDCC ?= sdcc
 HOST_CC ?= cc
@@ -20,6 +21,7 @@ SOURCES := src/platform/io.c src/platform/mcs51.c src/platform/ddc.c \
 OBJECTS := $(patsubst %.c,$(OUT)/%.rel,$(SOURCES))
 HEADERS := $(wildcard include/rtd/*.h boards/$(BOARD)/*.h)
 BITMAP_HEADER := $(OUT)/generated/splash_bitmap.h
+NO_SIGNAL_HEADER := $(OUT)/generated/no_signal_bitmap.h
 OSD_TEST := $(OUT)/tests/osd_test
 CFLAGS := -mmcs51 --std-c11 --model-large --stack-auto --no-xinit-opt \
           -Iinclude -Iboards/$(BOARD) -I$(OUT)/generated \
@@ -36,9 +38,12 @@ firmware: $(OUT)/firmware.bin
 $(BITMAP_HEADER): tools/bmp_to_header.py FORCE
 	python3 tools/bmp_to_header.py "$(SPLASH_BMP)" "$@"
 
+$(NO_SIGNAL_HEADER): tools/bmp_to_header.py FORCE
+	python3 tools/bmp_to_header.py "$(NO_SIGNAL_BMP)" "$@" --symbol no_signal
+
 FORCE:
 
-$(OUT)/%.rel: %.c $(HEADERS) $(BITMAP_HEADER) Makefile
+$(OUT)/%.rel: %.c $(HEADERS) $(BITMAP_HEADER) $(NO_SIGNAL_HEADER) Makefile
 	@mkdir -p $(dir $@)
 	$(SDCC) $(CFLAGS) -c $< -o $@
 
@@ -62,6 +67,6 @@ build/tests/video_test: tests/video_test.c src/rtd/video.c $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Iboards/$(BOARD) $< src/rtd/video.c -o $@
 
-$(OSD_TEST): tests/osd_test.c src/rtd/osd.c panels/$(PANEL).c $(HEADERS) $(BITMAP_HEADER) Makefile
+$(OSD_TEST): tests/osd_test.c src/rtd/osd.c panels/$(PANEL).c $(HEADERS) $(BITMAP_HEADER) $(NO_SIGNAL_HEADER) Makefile
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Iboards/$(BOARD) -I$(OUT)/generated $< src/rtd/osd.c panels/$(PANEL).c -o $@

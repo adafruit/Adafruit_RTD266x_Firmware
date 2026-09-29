@@ -20,7 +20,7 @@
 void main(void) {
   video_signal_t signal;
   uint16_t displayed_width = 0, candidate_width = 0;
-  uint8_t matching_samples = 0;
+  uint8_t matching_samples = 0, no_signal_visible = 0;
 
   platform_init();
   mcu_write(0x19, 'N'); /* New firmware; scratch register, not flash. */
@@ -35,16 +35,18 @@ void main(void) {
    * after it ends, so incoming pixels cannot appear behind the bitmap.
    */
   video_background(0, 0, 0);
-  osd_init();
   osd_show_splash();
   platform_delay_ms(SPLASH_DURATION_MS);
   osd_hide();
-  video_background(8, 8, 8);
 #endif
 
   for (;;) {
     if (!video_measure(&signal)) {
       video_blank(1);
+      if (!no_signal_visible) {
+        osd_show_no_signal();
+        no_signal_visible = 1;
+      }
       displayed_width = candidate_width = 0;
       matching_samples = 0;
       mcu_write(0xf2, 3);
@@ -54,6 +56,8 @@ void main(void) {
         matching_samples = 1;
       } else if (++matching_samples >= 2) {
         if (video_apply(&signal)) {
+          osd_hide();
+          no_signal_visible = 0;
           displayed_width = signal.width;
           mcu_write(0xf2, 4);
         }

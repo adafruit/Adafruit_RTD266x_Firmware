@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "rtd/io.h"
 #include "rtd/board.h"
@@ -10,6 +11,7 @@
 
 #define OSD_CODE
 #include "splash_bitmap.h"
+#include "no_signal_bitmap.h"
 
 /* Model the documented three byte lanes and auto-incrementing word port,
  * independently of the driver's bitmap packing code. */
@@ -58,24 +60,32 @@ void rtd_update(uint8_t page, uint8_t reg, uint8_t mask, uint8_t value) {
   rtd_write(page, reg, (rtd_read(page, reg) & (uint8_t)~mask) | (value & mask));
 }
 
-int main(void) {
-  const unsigned columns = (SPLASH_BITMAP_WIDTH + 11) / 12;
-  const unsigned rows = (SPLASH_BITMAP_HEIGHT + 17) / 18;
+static void check_asset(void (*show)(void), const char *name,
+                        unsigned bitmap_width, unsigned bitmap_height,
+                        unsigned bpp, unsigned colors,
+                        const uint8_t expected_palette[][3],
+                        const uint8_t *bitmap) {
+  const unsigned columns = (bitmap_width + 11) / 12;
+  const unsigned rows = (bitmap_height + 17) / 18;
   const unsigned width = columns * 12, height = rows * 18;
-  const unsigned pad_x = (width - SPLASH_BITMAP_WIDTH) / 2;
-  const unsigned pad_y = (height - SPLASH_BITMAP_HEIGHT) / 2;
+  const unsigned pad_x = (width - bitmap_width) / 2;
+  const unsigned pad_y = (height - bitmap_height) / 2;
   unsigned map, fonts, row, column, x, y, differing_pairs = 0;
   unsigned x_delay, y_delay;
 
-  assert(SPLASH_BITMAP_BPP == 1 || SPLASH_BITMAP_BPP == 4);
-  assert(SPLASH_PALETTE_COLORS <= 16);
-  osd_init();
-  assert(!(regs[0x6c] & 1) && !(frame[0][2] & 1));
-  assert(frame[3][1] == 0);
-  assert(palette_bytes == SPLASH_PALETTE_COLORS * 3);
-  for (row = 0; row < SPLASH_PALETTE_COLORS; ++row) {
+  assert(bpp == 1 || bpp == 4);
+  assert(colors <= 16);
+  /* Preserve SRAM, palette and frame state between shows. Only reset the
+   * transaction tracking, so missing writes cannot masquerade as clean RAM. */
+  memset(written, 0, sizeof(written));
+  palette_bytes = 0;
+  show();
+  assert((regs[0x6c] & 1) && (frame[0][2] & 1));
+  assert(frame[3][1] == 3);
+  assert(palette_bytes == colors * 3);
+  for (row = 0; row < colors; ++row) {
     for (column = 0; column < 3; ++column) {
-      assert(palette[row * 3 + column] == splash_palette[row][column]);
+      assert(palette[row * 3 + column] == expected_palette[row][column]);
     }
   }
   assert(!(regs[0x6e] & 0x80));
@@ -84,8 +94,8 @@ int main(void) {
   fonts = (frame[4][1] & 0x0f) | ((unsigned)frame[4][2] << 4);
   assert(rows + 1 <= map);
   assert(map + rows * columns <= fonts);
-  assert(fonts + rows * columns * 9 * SPLASH_BITMAP_BPP <= 4096);
-  assert(rows * columns <= (SPLASH_BITMAP_BPP == 4 ? 128 : 256));
+  assert(fonts + rows * columns * 9 * bpp <= 4096);
+  assert(rows * columns <= (bpp == 4 ? 128 : 256));
   for (row = 0; row < rows; ++row) {
     assert(sram[row][0] == 0x83); /* Enabled, row width/height both 2x. */
     assert((sram[row][1] >> 3) + 1u == 18);
@@ -93,9 +103,9 @@ int main(void) {
     assert(sram[row][2] == columns);
     for (column = 0; column < columns; ++column) {
       unsigned entry = map + row * columns + column;
-      assert(sram[entry][0] == (SPLASH_BITMAP_BPP == 1 ? 0x8c : 0x90));
+      assert(sram[entry][0] == (bpp == 1 ? 0x8c : 0x90));
       assert(sram[entry][1] == row * columns + column);
-      assert(sram[entry][2] == (SPLASH_BITMAP_BPP == 1 ? 0x10 : 0));
+      assert(sram[entry][2] == (bpp == 1 ? 0x10 : 0));
     }
   }
   assert(sram[rows][0] == 0 && sram[rows][1] == 0 && sram[rows][2] == 0);
@@ -107,8 +117,8 @@ int main(void) {
       unsigned entry = map + (y / 18) * columns + x / 12;
       unsigned bit = (y % 2 ? 11 : 23) - x % 12;
       unsigned expected = 0, actual = 0, plane;
-      for (plane = 0; plane < SPLASH_BITMAP_BPP; ++plane) {
-        unsigned word = fonts + sram[entry][1] * 9 * SPLASH_BITMAP_BPP +
+      for (plane = 0; plane < bpp; ++plane) {
+        unsigned word = fonts + sram[entry][1] * 9 * bpp +
                         plane * 9 + (y % 18) / 2;
         uint32_t pixels = (uint32_t)sram[word][0] |
                           ((uint32_t)sram[word][1] << 8) |
@@ -118,30 +128,29 @@ int main(void) {
           ++differing_pairs;
         }
       }
-      if (x >= pad_x && x < pad_x + SPLASH_BITMAP_WIDTH &&
-          y >= pad_y && y < pad_y + SPLASH_BITMAP_HEIGHT) {
+      if (x >= pad_x && x < pad_x + bitmap_width &&
+          y >= pad_y && y < pad_y + bitmap_height) {
         unsigned source_x = x - pad_x, source_y = y - pad_y;
-        unsigned source_bit = source_x * SPLASH_BITMAP_BPP;
-        unsigned byte = source_y * ((SPLASH_BITMAP_WIDTH * SPLASH_BITMAP_BPP + 7) / 8) +
+        unsigned source_bit = source_x * bpp;
+        unsigned byte = source_y * ((bitmap_width * bpp + 7) / 8) +
                         source_bit / 8;
-        expected = (splash_bitmap[byte] >> (8 - SPLASH_BITMAP_BPP - source_bit % 8)) &
-                   ((1u << SPLASH_BITMAP_BPP) - 1);
+        expected = (bitmap[byte] >> (8 - bpp - source_bit % 8)) &
+                   ((1u << bpp) - 1);
       }
       assert(actual == expected);
-      assert(actual < SPLASH_PALETTE_COLORS);
+      assert(actual < colors);
     }
   }
   /* Every expected word has all lanes; unused SRAM was not overwritten. */
   for (row = 0; row < 4096; ++row) {
     unsigned used = row <= rows ||
                     (row >= map && row < map + rows * columns) ||
-                    (row >= fonts && row < fonts + rows * columns * 9 * SPLASH_BITMAP_BPP);
+                    (row >= fonts && row < fonts + rows * columns * 9 * bpp);
     for (column = 0; column < 3; ++column) {
       assert(written[row][column] == used);
     }
   }
 
-  osd_show_splash();
   assert((regs[0x6c] & 1) && (frame[0][2] & 1));
   assert(frame[3][1] == 3); /* Global 2x combines with row 2x for 4x. */
   x_delay = ((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6);
@@ -153,10 +162,23 @@ int main(void) {
   assert(y_delay * 2 <= panel.vstart + (panel.height - height * 4) / 2);
   assert(panel.vstart + (panel.height - height * 4) / 2 - y_delay * 2 < 2);
 
+  printf("OSD %s %u-bpp bitmap, palette, padding, layout and position passed "
+         "(%u differing scanline comparisons)\n", name, bpp, differing_pairs);
+}
+
+int main(void) {
+  check_asset(osd_show_splash, "splash", SPLASH_BITMAP_WIDTH,
+              SPLASH_BITMAP_HEIGHT, SPLASH_BITMAP_BPP, SPLASH_PALETTE_COLORS,
+              splash_palette, splash_bitmap);
+  check_asset(osd_show_no_signal, "no signal", NO_SIGNAL_BITMAP_WIDTH,
+              NO_SIGNAL_BITMAP_HEIGHT, NO_SIGNAL_BITMAP_BPP,
+              NO_SIGNAL_PALETTE_COLORS, no_signal_palette, no_signal_bitmap);
+  check_asset(osd_show_splash, "splash again", SPLASH_BITMAP_WIDTH,
+              SPLASH_BITMAP_HEIGHT, SPLASH_BITMAP_BPP, SPLASH_PALETTE_COLORS,
+              splash_palette, splash_bitmap);
   osd_hide();
   assert(!(regs[0x6c] & 1) && !(frame[0][2] & 1));
   assert(frame[3][0] == 0 && frame[3][1] == 0 && frame[3][2] == 0);
-  printf("OSD %u-bpp bitmap, palette, padding, layout, position and hide passed "
-         "(%u differing scanline comparisons)\n", SPLASH_BITMAP_BPP, differing_pairs);
+  puts("OSD asset switching and hide passed");
   return 0;
 }

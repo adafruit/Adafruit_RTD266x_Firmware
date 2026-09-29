@@ -14,14 +14,20 @@ timing generator running independently of input sync during this interval.
 
 `tools/bmp_to_header.py` prepares one-bit or four-bit 12x18 tiles during the
 build. `src/rtd/osd.c` uploads those bytes and builds a row/character map in
-OSD SRAM. Initialization leaves the bitmap off;
-`osd_show_splash()` enables it and `osd_hide()` removes it. The application owns
-the full-screen background and handover to video. Initialize the OSD again
-after a scaler reset. Replace `assets/splash.bmp` and rebuild to change the artwork;
+OSD SRAM. `osd_show_splash()` and `osd_show_no_signal()` each load and show their
+own bitmap and palette; `osd_hide()` removes the overlay. The application owns
+the full-screen background and handover to video. Each show initializes the OSD,
+including after a scaler reset. Replace `assets/splash.bmp` and rebuild to change the artwork;
 its format, dimensions and license are documented in `assets/README.md`.
 BMP decoding and palette quantization happen automatically during the build.
 There are up to 15 visible colors plus transparent index zero. This uses the
 OSD palette and SRAM, not a full-color framebuffer.
+
+The independent `NO_SIGNAL_BMP` build option defaults to `assets/no-signal.bmp`.
+On signal loss, the app switches to the black free-running background and loads
+this bitmap once. It remains visible through input qualification, then hides on
+successful video acquisition. No-signal artwork works with the startup splash
+disabled. The two images reuse OSD SRAM rather than being resident together.
 
 The SRAM port accepts Byte0, Byte1, Byte2 while each glyph's first scan line
 occupies bits 23:12. Before global zoom, horizontal frame delay uses four-pixel

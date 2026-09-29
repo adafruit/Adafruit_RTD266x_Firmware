@@ -16,7 +16,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y sdcc make gcc python3-pil
       - run: make -j2 SPLASH=${{ matrix.splash }} check
       - if: matrix.splash == 1
-        run: make -j2 OUT=build/color-test SPLASH_BMP=tests/color_splash.bmp check
+        run: make -j2 OUT=build/color-test SPLASH_BMP=tests/color_splash.bmp NO_SIGNAL_BMP=assets/splash.bmp check
       - uses: actions/upload-artifact@v4
         with:
           name: uc586-splash${{ matrix.splash }}-bank0

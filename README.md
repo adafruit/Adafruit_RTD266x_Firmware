@@ -50,6 +50,11 @@ See the [custom splash guide](assets/README.md) for the complete BMP-to-firmware
 workflow, example commands, timing and image limits. Use
 `make SPLASH=0` to omit it; that build uses a separate `-splash0` directory.
 
+When input is absent, a separate Adafruit TV test card displays "NO SIGNAL" on
+the black background. It disappears when valid video returns. Customize it with
+`make NO_SIGNAL_BMP=path/to/my-no-signal.bmp check`; this works even with
+`SPLASH=0` and uses the same BMP dimensions, palette conversion and centering.
+
 `make TRACE=1` enables bench diagnostics in the EDID ASCII descriptor and MCU
 scratch registers. Its output directory ends in `-trace`. This changes the
 descriptor during measurement; use the default `TRACE=0` for ordinary display
@@ -65,7 +70,7 @@ operation. See [diagnostic decoding](docs/video-registers.md#bench-diagnostics).
 | `src/rtd/` | Video acquisition, clock/scaler configuration, EDID generation and OSD |
 | `src/app/` | Firmware policy: acquire video, handle loss and show a splash |
 | `include/rtd/` | Small interfaces between those layers |
-| `assets/` | Editable startup BMP and its license |
+| `assets/` | Editable startup and no-signal BMPs, with artwork attribution |
 | `tools/` | Build-time BMP palette conversion |
 | `tests/` | Host checks for timing arithmetic, register encoding and rejection paths |
 
@@ -148,9 +153,9 @@ including a binary/map check that all six interrupt vectors reach the linked
 handlers and a pixel-by-pixel reconstruction of the bitmap from OSD writes.
 BMP tests cover color preservation, palette reduction, transparent black,
 row/tile/plane ordering, size limits and unchanged generated output.
-The current default build uses 11,693 bytes of flash and 132 bytes
+The current default build uses 21,945 bytes of flash and 136 bytes
 of XRAM; its 64 KiB bank0 SHA256 is
-`afd4ea8880ca3904b5a48f01b04777e4d2bcb0749b706a4a8f59203a8f72502f`.
+`adbbab1ce199a6d4e476053ed6220f3239392bbf46512eafc107bfeaad1f55f1`.
 Programming verified all 512 KiB and restored the original protection byte
 `0x0C`. Builds, code and register notes are provided; stock firmware dumps and
 the preserved original flash tail are not distributed.

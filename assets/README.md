@@ -106,7 +106,23 @@ No vendor bitmap, compressed logo block or runtime decompressor is needed.
 
 ## No-signal screen
 
-Currently, losing the input switches to a solid background; there is no separate
-no-signal BMP option yet. The panel timing continues without input, so the same
-OSD engine can support artwork or a message there. Adding that behavior requires
-showing the overlay on signal loss and hiding it when valid video is acquired.
+`no-signal.bmp` is the default Adafruit TV test card with a "NO SIGNAL" message.
+It appears when input is absent, including startup without HDMI, and disappears
+when valid video is acquired. The panel continues running without input. The
+bitmap loads once per signal-loss event, so it stays steady between input checks.
+
+Select your own image independently of the startup splash:
+
+```sh
+make SPLASH_BMP=assets/rainbow-splash.bmp NO_SIGNAL_BMP=assets/my-no-signal.bmp check
+```
+
+Or replace `assets/no-signal.bmp` to change the default. The converter handles
+both images identically: aspect-preserving resize to 192x108, 4x display scale,
+up to 15 visible colors, transparent black and a black display background.
+The no-signal screen remains enabled with `SPLASH=0`. Returning input must pass
+the normal two-sample acquisition checks before the overlay is hidden.
+
+The test-card artwork was generated with the built-in image-generation tool,
+using the same official high-resolution Adafruit logo reference as the rainbow
+demo. It is a decorative status screen, not a calibrated broadcast test source.

@@ -83,7 +83,9 @@ generator on, bit5 selecting the full-screen background, and bit3 clear
 shows its bitmap over that background for one second after uploading the tiles,
 then starts measuring video.
 Mode application configures capture and scaling before selecting frame sync
-and revealing input pixels. Signal loss returns to the free-running background.
+and revealing input pixels. Signal loss returns to the black free-running
+background and shows the independent no-signal bitmap. That asset is uploaded
+only on the transition to missing input and hidden after successful acquisition.
 
 ## Bench diagnostics
 

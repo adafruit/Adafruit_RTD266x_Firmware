@@ -10,6 +10,7 @@
 #define OSD_CODE
 #endif
 #include "splash_bitmap.h"
+#include "no_signal_bitmap.h"
 
 /* Realtek RTD2660 register manual, pp. 64-65, 81, 358-359, 383-398.
  * All accesses below are to the common scaler page. The OSD address selects
@@ -19,36 +20,22 @@
 #define OSD_FONT_BASE 0x0100
 #define OSD_SRAM 0x1000
 #define OSD_ALL_BYTES 0xc000
-#define TILE_COLUMNS ((SPLASH_BITMAP_WIDTH + 11u) / 12u)
-#define TILE_ROWS ((SPLASH_BITMAP_HEIGHT + 17u) / 18u)
-#define TILE_COUNT (TILE_COLUMNS * TILE_ROWS)
-#define TILE_WORDS (9u * SPLASH_BITMAP_BPP)
-#define SPLASH_WIDTH (TILE_COLUMNS * 12u * 4u)
-#define SPLASH_HEIGHT (TILE_ROWS * 18u * 4u)
+/* At most 16 columns x 6 rows: maps fit before word 0x100, selectors stay
+ * below 128, and even 4-bpp fonts fit in the lower 12 KiB SRAM bank. */
+#define CHECK_BITMAP(prefix, name) \
+  _Static_assert(prefix##_BITMAP_WIDTH > 0 && prefix##_BITMAP_WIDTH <= 192 && \
+                 prefix##_BITMAP_HEIGHT > 0 && prefix##_BITMAP_HEIGHT <= 108, \
+                 "Bitmap dimensions exceed the OSD budget"); \
+  _Static_assert((prefix##_BITMAP_BPP == 1 || prefix##_BITMAP_BPP == 4) && \
+                 prefix##_PALETTE_COLORS >= 2 && prefix##_PALETTE_COLORS <= 16, \
+                 "Unsupported bitmap color format"); \
+  _Static_assert(sizeof(name##_tiles) == ((prefix##_BITMAP_WIDTH + 11u) / 12u) * \
+                 ((prefix##_BITMAP_HEIGHT + 17u) / 18u) * 27u * prefix##_BITMAP_BPP, \
+                 "Bitmap dimensions do not match tile data")
+CHECK_BITMAP(SPLASH, splash);
+CHECK_BITMAP(NO_SIGNAL, no_signal);
 
-#if SPLASH_BITMAP_WIDTH == 0 || SPLASH_BITMAP_HEIGHT == 0
-#error Splash bitmap dimensions must be nonzero
-#endif
-#if SPLASH_BITMAP_BPP != 1 && SPLASH_BITMAP_BPP != 4
-#error Splash bitmap must use one or four bits per pixel
-#endif
-#if SPLASH_PALETTE_COLORS < 2 || SPLASH_PALETTE_COLORS > 16
-#error Splash palette must contain between two and sixteen entries
-#endif
-/* Map entries and tile data must not overlap or use the extended SRAM bank.
- * This driver uses a fixed 4x display scale. LUT tiles use seven-bit IDs.
- */
-#if TILE_ROWS >= OSD_MAP_BASE || TILE_COUNT > OSD_FONT_BASE - OSD_MAP_BASE
-#error Splash bitmap does not fit the OSD map
-#endif
-#if SPLASH_BITMAP_BPP == 4 && TILE_COUNT > 128
-#error Color splash exceeds seven-bit tile selectors
-#endif
-#if OSD_FONT_BASE + TILE_COUNT * TILE_WORDS > 4096u
-#error Splash bitmap exceeds the first 12 KiB OSD SRAM bank
-#endif
-_Static_assert(sizeof(splash_tiles) == TILE_COUNT * TILE_WORDS * 3u,
-               "Splash dimensions do not match the generated tile data");
+static uint16_t active_width, active_height;
 
 static void select_word(uint16_t address) {
   /* This small layout stays below the extended SRAM bank at 12 KiB. */
@@ -70,24 +57,48 @@ static void set_frame(uint8_t enabled) {
    * Center in the active raster, including blanking and the board's measured
    * horizontal OSD correction. The OSD origin differs from the video origin.
    */
-  uint16_t x = (panel.hstart + (panel.width - SPLASH_WIDTH) / 2 -
+  uint16_t x = (panel.hstart + (panel.width - active_width) / 2 -
                 BOARD_OSD_X_CORRECTION) / 8;
-  uint16_t y = (panel.vstart + (panel.height - SPLASH_HEIGHT) / 2) / 2;
+  uint16_t y = (panel.vstart + (panel.height - active_height) / 2) / 2;
   write_word(0, (uint8_t)(y >> 3), (uint8_t)(x >> 2),
              (uint8_t)(((x & 3) << 6) | ((y & 7) << 3) | enabled));
 }
 
 void osd_hide(void) {
   rtd_update(0, 0x6c, 0x01, 0);
-  set_frame(0);
+  write_word(0, 0, 0, 0);
   /* Manual p383 requires global double width off when OSD is inactive. */
   write_word(3, 0, 0, 0);
 }
 
-void osd_init(void) {
+static void load_bitmap(uint8_t missing_input) {
+  const OSD_CODE uint8_t *tiles, *colors;
+  uint16_t tile_bytes;
+  uint8_t columns, rows, map_mode, map_background, palette_count;
   uint8_t tile, row, color, channel;
   uint16_t byte;
 
+  if (missing_input) {
+    columns = (NO_SIGNAL_BITMAP_WIDTH + 11u) / 12u;
+    rows = (NO_SIGNAL_BITMAP_HEIGHT + 17u) / 18u;
+    map_mode = NO_SIGNAL_BITMAP_BPP == 4 ? 0x90 : 0x8c;
+    map_background = NO_SIGNAL_BITMAP_BPP == 4 ? 0 : 0x10;
+    palette_count = NO_SIGNAL_PALETTE_COLORS;
+    tiles = no_signal_tiles;
+    colors = &no_signal_palette[0][0];
+    tile_bytes = sizeof(no_signal_tiles);
+  } else {
+    columns = (SPLASH_BITMAP_WIDTH + 11u) / 12u;
+    rows = (SPLASH_BITMAP_HEIGHT + 17u) / 18u;
+    map_mode = SPLASH_BITMAP_BPP == 4 ? 0x90 : 0x8c;
+    map_background = SPLASH_BITMAP_BPP == 4 ? 0 : 0x10;
+    palette_count = SPLASH_PALETTE_COLORS;
+    tiles = splash_tiles;
+    colors = &splash_palette[0][0];
+    tile_bytes = sizeof(splash_tiles);
+  }
+  active_width = columns * 48u;
+  active_height = rows * 72u;
   osd_hide();
   /* Keep global zoom off until show; disable compression and scrolling.
    * Row zoom (p393) combines with global zoom (p384) for 4x hardware tiles.
@@ -105,17 +116,13 @@ void osd_init(void) {
   /* 18-pixel tile height encoded as height minus one. The row
    * commands request 2x width and height; the map ends before font data.
    */
-  for (row = 0; row < TILE_ROWS; ++row) {
-    write_word(OSD_SRAM | row, 0x83, (uint8_t)(17u << 3), TILE_COLUMNS);
+  for (row = 0; row < rows; ++row) {
+    write_word(OSD_SRAM | row, 0x83, (uint8_t)(17u << 3), columns);
   }
-  write_word(OSD_SRAM | TILE_ROWS, 0, 0, 0);
-  for (tile = 0; tile < TILE_COUNT; ++tile) {
-#if SPLASH_BITMAP_BPP == 4
-    /* LUT mode: seven-bit tile index; pixel zero selects background zero. */
-    write_word(OSD_SRAM | (OSD_MAP_BASE + tile), 0x90, tile, 0);
-#else
-    write_word(OSD_SRAM | (OSD_MAP_BASE + tile), 0x8c, tile, 0x10);
-#endif
+  write_word(OSD_SRAM | rows, 0, 0, 0);
+  for (tile = 0; tile < columns * rows; ++tile) {
+    /* LUT mode has seven-bit selectors; palette index zero is transparent. */
+    write_word(OSD_SRAM | (OSD_MAP_BASE + tile), map_mode, tile, map_background);
   }
 
   select_word(OSD_ALL_BYTES | OSD_SRAM | OSD_FONT_BASE);
@@ -123,26 +130,36 @@ void osd_init(void) {
    * with each 24-bit SRAM word already in low/middle/high byte-lane order.
    * Upload directly: the 8051 does no image decoding or per-pixel packing.
    */
-  for (byte = 0; byte < sizeof(splash_tiles); ++byte) {
-    rtd_write(0, 0x92, splash_tiles[byte]);
+  for (byte = 0; byte < tile_bytes; ++byte) {
+    rtd_write(0, 0x92, tiles[byte]);
   }
 
   /* Palette zero is the transparent background in both tile modes. */
   rtd_write(0, 0x6e, 0x80);
-  for (color = 0; color < SPLASH_PALETTE_COLORS; ++color) {
+  for (color = 0; color < palette_count; ++color) {
     for (channel = 0; channel < 3; ++channel) {
-      rtd_write(0, 0x6f, splash_palette[color][channel]);
+      rtd_write(0, 0x6f, *colors++);
     }
   }
   rtd_write(0, 0x6e, 0);
 }
 
-void osd_show_splash(void) {
-  if (SPLASH_WIDTH > panel.width || SPLASH_HEIGHT > panel.height) {
+static void show_bitmap(void) {
+  if (active_width > panel.width || active_height > panel.height) {
     return;
   }
   /* Global 2x width/height scales the already doubled character rows. */
   write_word(3, 0, 0x03, 0);
   set_frame(1);
   rtd_update(0, 0x6c, 0x01, 0x01);
+}
+
+void osd_show_splash(void) {
+  load_bitmap(0);
+  show_bitmap();
+}
+
+void osd_show_no_signal(void) {
+  load_bitmap(1);
+  show_bitmap();
 }
