@@ -18,7 +18,7 @@ recorded in [video notes](docs/video-registers.md) and
 Use GNU Make and SDCC on Linux, macOS or Windows through WSL. On Ubuntu:
 
 ```sh
-sudo apt install sdcc make gcc python3
+sudo apt install sdcc make gcc python3 python3-pil
 make
 make check
 ```
@@ -38,8 +38,9 @@ The default build shows a full-screen blue startup background with a centered
 white Adafruit flower and wordmark bitmap. Incoming video stays hidden for five
 seconds, then the firmware acquires and displays it. The panel free-runs during startup so
 the screen does not require an input signal. The bitmap is split into tiles
-stored in the scaler's OSD SRAM. See the
-[artwork format and attribution](assets/README.md) to substitute a different image. Use
+stored in the scaler's OSD SRAM. Replace `assets/splash.bmp` and run `make` to
+customize it; the build generates the bitmap header automatically using Pillow.
+See the [artwork format and attribution](assets/README.md). Use
 `make SPLASH=0` to omit it; that build uses a separate `-splash0` directory.
 
 `make TRACE=1` enables bench diagnostics in the EDID ASCII descriptor and MCU

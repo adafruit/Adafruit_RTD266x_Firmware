@@ -15,7 +15,7 @@ timing generator running independently of input sync during this interval.
 a row/character map in OSD SRAM. Initialization leaves the bitmap off;
 `osd_show_splash()` enables it and `osd_hide()` removes it. The application owns
 the full-screen background and handover to video. Initialize the OSD again
-after a scaler reset. Replace `assets/splash_bitmap.h` to change the artwork;
+after a scaler reset. Replace `assets/splash.bmp` and rebuild to change the artwork;
 its format, dimensions and license are documented in `assets/README.md`.
 Full-color bitmap loading is not implemented.
 

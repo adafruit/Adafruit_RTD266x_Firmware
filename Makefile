@@ -18,6 +18,7 @@ SOURCES := src/platform/io.c src/platform/mcs51.c src/platform/ddc.c \
            boards/$(BOARD)/board.c panels/$(PANEL).c src/app/$(APP).c
 OBJECTS := $(patsubst %.c,$(OUT)/%.rel,$(SOURCES))
 HEADERS := $(wildcard include/rtd/*.h boards/$(BOARD)/*.h assets/*.h)
+BITMAP_HEADER := assets/splash_bitmap.h
 CFLAGS := -mmcs51 --std-c11 --model-large --stack-auto --no-xinit-opt \
           -Iinclude -Iboards/$(BOARD) -DRTD_SPLASH=$(SPLASH) -DRTD_TRACE=$(TRACE)
 LDFLAGS := --xram-loc 0xfb00 --xram-size 512 --code-size 65536
@@ -27,7 +28,10 @@ all: firmware
 firmware: $(OUT)/firmware.bin
 	python3 tests/firmware_test.py $(OUT)/firmware.bin $(OUT)/firmware.map
 
-$(OUT)/%.rel: %.c $(HEADERS) Makefile
+$(BITMAP_HEADER): assets/splash.bmp tools/bmp_to_header.py
+	python3 tools/bmp_to_header.py $< $@
+
+$(OUT)/%.rel: %.c $(HEADERS) $(BITMAP_HEADER) Makefile
 	@mkdir -p $(dir $@)
 	$(SDCC) $(CFLAGS) -c $< -o $@
 
@@ -38,6 +42,7 @@ $(OUT)/firmware.bin: $(OUT)/firmware.ihx
 	makebin -s 65536 $< $@
 
 check: firmware build/tests/edid_test build/tests/video_test build/tests/osd_test
+	python3 tests/bitmap_test.py
 	build/tests/edid_test
 	build/tests/video_test
 	build/tests/osd_test
@@ -50,6 +55,6 @@ build/tests/video_test: tests/video_test.c src/rtd/video.c $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Iboards/$(BOARD) $< src/rtd/video.c -o $@
 
-build/tests/osd_test: tests/osd_test.c src/rtd/osd.c panels/$(PANEL).c $(HEADERS)
+build/tests/osd_test: tests/osd_test.c src/rtd/osd.c panels/$(PANEL).c $(HEADERS) $(BITMAP_HEADER)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Iboards/$(BOARD) $< src/rtd/osd.c panels/$(PANEL).c -o $@
