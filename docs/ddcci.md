@@ -114,9 +114,9 @@ The same v29 build then passed these physical checks:
 - Virtual-key mute produced `8D=1` and reduced recorded RMS by about 36 dB;
   `8D=2` restored the tone. This was attenuation, not measured zero silence.
 - `D6=4` visibly darkened the panel; `D6=1` recovered it. No Signal Black and
-  Blue were visually confirmed. Test bitmap selection read back successfully,
-  but its transition capture was inconclusive; it was taken only two seconds
-  after selection and may have preceded bitmap upload completion.
+  Blue were visually confirmed. A follow-up Blue-to-Test transition showed the
+  complete Adafruit test card after an eight-second settling interval, with
+  `E6=2` readback. The earlier two-second capture had shown only black.
 - Selecting `E7=2` after input had already been absent for more than two seconds
   switched the backlight off while firmware remained running and `D6` stayed
   1. Returning the tester to `mode 640` visibly woke the panel to color bars,

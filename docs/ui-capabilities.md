@@ -311,3 +311,9 @@ On 2026-09-29, Limor confirmed by multimeter continuity that the six-pin
 backlight boost IC's EN connects to RTD2660H pin 54 (P6.4). This establishes the
 board connection independently of the firmware and camera tests. The boost
 IC's identity and whether EN supports PWM dimming remain unverified.
+
+The register manual's `PIN_SHARE_CTRL06` (`0xFF9C`, bits 7:6, pin 54) lists
+only GPIO input, open-drain output, push-pull output and ADCA4 input. There is
+no hardware PWM function on this pin. Leave UC-586 dimming disabled; software
+PWM or a wiring change is outside the current implementation. Backlight on/off
+and no-signal sleep/wake remain supported.
