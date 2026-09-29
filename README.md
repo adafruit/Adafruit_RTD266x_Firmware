@@ -35,9 +35,10 @@ output directories so changing a board, panel, application or splash setting
 cannot reuse the other variant's object files.
 
 The default build shows a full-screen black startup background with a centered
-white Adafruit flower and wordmark bitmap. Incoming video stays hidden for five
-seconds, then the firmware acquires and displays it. The panel free-runs during startup so
-the screen does not require an input signal. The bitmap is split into tiles
+white Adafruit flower and wordmark bitmap. The splash stays visible for one
+second after loading, then the firmware acquires and displays input video.
+The panel free-runs during startup, so the screen does not require an input
+signal. The bitmap is split into tiles
 stored in the scaler's OSD SRAM. Replace `assets/splash.bmp` and run `make` to
 customize it; the build generates the bitmap header automatically using Pillow.
 BMPs can contain up to 15 visible colors plus transparent black; richer images
@@ -45,7 +46,8 @@ are quantized automatically. Use `make SPLASH_BMP=path/to/my-logo.bmp` to select
 another file. Larger BMPs, including full-size 16-bit RGB565 images, automatically
 shrink to fit 192x108 pixels without cropping and are displayed at 4x scale.
 RGB565 input is converted to the OSD palette; this is not a full-color framebuffer.
-See the [artwork format and attribution](assets/README.md). Use
+See the [custom splash guide](assets/README.md) for the complete BMP-to-firmware
+workflow, example commands, timing and image limits. Use
 `make SPLASH=0` to omit it; that build uses a separate `-splash0` directory.
 
 `make TRACE=1` enables bench diagnostics in the EDID ASCII descriptor and MCU
@@ -136,7 +138,7 @@ the source enabled and disabled, followed by handover to video. These checks
 used the Feather DVI source, not a general
 HDMI compatibility suite. Physical cold boot was tested on the initial video
 implementation; the bitmap splash was tested by whole-chip reset. Bitmap upload
-precedes the five-second hold, so the black background appears before the logo.
+precedes the one-second hold, so the black background appears before the logo.
 The color renderer was checked on the UC-586 with a 15-color chart, transparent
 gaps and return to video. Packing tiles during conversion makes the chart
 visible in the first startup capture, about two seconds after reset.
@@ -148,7 +150,7 @@ BMP tests cover color preservation, palette reduction, transparent black,
 row/tile/plane ordering, size limits and unchanged generated output.
 The current default build uses 11,693 bytes of flash and 132 bytes
 of XRAM; its 64 KiB bank0 SHA256 is
-`eba5e01c6898fa84ca64eb25742fb825bd70e242ce8cac9dbe56af749fcef519`.
+`afd4ea8880ca3904b5a48f01b04777e4d2bcb0749b706a4a8f59203a8f72502f`.
 Programming verified all 512 KiB and restored the original protection byte
 `0x0C`. Builds, code and register notes are provided; stock firmware dumps and
 the preserved original flash tail are not distributed.

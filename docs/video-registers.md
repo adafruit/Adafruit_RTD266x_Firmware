@@ -80,7 +80,8 @@ bank 2 for both color paths and selected only for horizontal filtering.
 The panel starts in free-running mode with CR28 bit7 forcing the timing
 generator on, bit5 selecting the full-screen background, and bit3 clear
 (manual pp30–31). This raster does not depend on input VSYNC. The application
-shows its bitmap over that background for five seconds before measuring video.
+shows its bitmap over that background for one second after uploading the tiles,
+then starts measuring video.
 Mode application configures capture and scaling before selecting frame sync
 and revealing input pixels. Signal loss returns to the free-running background.
 

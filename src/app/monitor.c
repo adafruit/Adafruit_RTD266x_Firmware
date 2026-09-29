@@ -11,6 +11,8 @@
 #define RTD_SPLASH 0
 #endif
 
+#define SPLASH_DURATION_MS 1000
+
 /* Application policy lives here; register setup belongs to the drivers.
  * Two matching samples acquire a mode. Signal loss blanks immediately.
  * Same-width rate changes without loss are intentionally not tracked yet.
@@ -35,7 +37,7 @@ void main(void) {
   video_background(0, 0, 0);
   osd_init();
   osd_show_splash();
-  platform_delay_ms(5000);
+  platform_delay_ms(SPLASH_DURATION_MS);
   osd_hide();
   video_background(8, 8, 8);
 #endif

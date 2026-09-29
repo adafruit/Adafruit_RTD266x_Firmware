@@ -1,4 +1,43 @@
-# Startup bitmap
+# Custom splash screens
+
+The UC-586 can show your own centered BMP on a black startup screen, using
+up to 15 visible colors plus transparent black. No Keil tools are required.
+
+## Quick start
+
+1. Create a BMP in your image editor. An 800x480 canvas matches the panel's
+   aspect ratio; use bold artwork and large lettering for the OSD's lower
+   resolution. RGB565, RGB color, indexed-color and monochrome BMPs work.
+2. Save it in `assets/`, for example `assets/my-splash.bmp`.
+3. From the repository root, build and check that exact artwork:
+
+   ```sh
+   make SPLASH_BMP=assets/my-splash.bmp check
+   ```
+
+   To try the included rainbow demo:
+
+   ```sh
+   make SPLASH_BMP=assets/rainbow-splash.bmp check
+   ```
+
+4. Follow the [programming instructions](../README.md#programming) to install
+   `build/uc586-rgb800x480-monitor-splash1/firmware.bin`. This is a 64 KiB bank0,
+   not a complete flash image: preserve the rest of your board's verified backup.
+5. Restart the display. The image is held for one second after its tiles load,
+   then input video takes over. Hardware initialization, tile upload and video
+   acquisition add to total startup time; the one second is the visible hold.
+
+Keep passing `SPLASH_BMP=...` on subsequent builds, or replace `assets/splash.bmp`
+to make your image the default. Ordinary `make` selects the supplied default
+path again. For a filename with spaces, quote the assignment:
+`make "SPLASH_BMP=assets/my splash.bmp" check`.
+
+Use `make SPLASH=0` to omit the splash. To change its hold time, edit
+`SPLASH_DURATION_MS` in `src/app/monitor.c` (milliseconds), then rebuild.
+The startup `video_background(0, 0, 0)` calls in that file select black.
+
+## Artwork format and limits
 
 `splash.bmp` contains the unmodified 82x64 flower and wordmark pixels from
 [`splash1_data` in Adafruit_SH110x](https://github.com/adafruit/Adafruit_SH110x/blob/master/splash.h).
@@ -56,11 +95,18 @@ with `make SPLASH_BMP=tests/color_splash.bmp` to exercise the color renderer.
 `rainbow-splash.bmp` is an 800x480 rainbow demo with a white Adafruit logo.
 Build it with `make SPLASH_BMP=assets/rainbow-splash.bmp`. It uses the same
 automatic resizing and palette conversion, displaying at 720x432 on the black
-background for five seconds. The default logo remains available as `splash.bmp`.
+background for one second. The default logo remains available as `splash.bmp`.
 The rainbow artwork was generated with the built-in image-generation tool,
 using the high-resolution logo from page 3 of the official
 [Adafruit brand guide](https://cdn-blog.adafruit.com/uploads/2017/03/adafruit_brand_identity_guidelines_update.pdf)
 as a reference. Adafruit retains its logo and trademark rights.
 
-The startup background and five-second duration are in `src/app/monitor.c`.
+The startup background and one-second duration are in `src/app/monitor.c`.
 No vendor bitmap, compressed logo block or runtime decompressor is needed.
+
+## No-signal screen
+
+Currently, losing the input switches to a solid background; there is no separate
+no-signal BMP option yet. The panel timing continues without input, so the same
+OSD engine can support artwork or a message there. Adding that behavior requires
+showing the overlay on signal loss and hiding it when valid video is acquired.

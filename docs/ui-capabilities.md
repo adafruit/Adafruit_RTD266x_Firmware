@@ -8,7 +8,8 @@ general-purpose RGB framebuffer accessible to the 8051.
 
 The startup screen fills the panel with a black background and a centered white
 Adafruit flower and wordmark bitmap. `src/app/monitor.c` holds that screen for
-five seconds before acquiring input video. `src/rtd/video.c` keeps the display clock and
+one second after uploading its tiles before acquiring input video.
+`src/rtd/video.c` keeps the display clock and
 timing generator running independently of input sync during this interval.
 
 `tools/bmp_to_header.py` prepares one-bit or four-bit 12x18 tiles during the
@@ -55,7 +56,7 @@ plane order were checked on the UC-586, followed by return to input video.
 
 | Control | Hardware basis | Project status |
 | --- | --- | --- |
-| Full-screen startup | Free-running display background plus a centered bitmap | Five-second startup screen; input video is enabled afterward |
+| Full-screen startup | Free-running display background plus a centered bitmap | One-second hold after bitmap upload; input video is enabled afterward |
 | Text menus | Row and character maps, proportional 12x18 tiles, 16-color palette, transparent background | Minimal splash driver; menu navigation and full font still needed |
 | Small graphic splash | 1-, 2- or 4-bit tiles in dedicated OSD SRAM, with shared palette and window effects | Automatic BMP conversion; one-bit or four-bit tiles, 15 visible colors plus transparency, 4x scale |
 | Video brightness | Per-channel RGB additive coefficients, separate from backlight power | Documented, not yet exposed or bench verified |
