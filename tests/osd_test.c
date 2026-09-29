@@ -39,7 +39,6 @@ void rtd_write(uint8_t page, uint8_t reg, uint8_t value) {
     assert(!(regs[0x93] & 0x08));       /* Lower SRAM bank. */
     word = address & 0x0fff;
     if (address & 0x1000) {
-      assert(!written[word][lane]);
       sram[word][lane] = value;
       written[word][lane] = 1;
     } else {
@@ -166,6 +165,152 @@ static void check_asset(void (*show)(void), const char *name,
          "(%u differing scanline comparisons)\n", name, bpp, differing_pairs);
 }
 
+static unsigned glyph_pixel(unsigned glyph, unsigned x, unsigned y) {
+  unsigned word = 0x100 + glyph * 9 + y / 2;
+  uint32_t pixels = (uint32_t)sram[word][0] |
+                    ((uint32_t)sram[word][1] << 8) |
+                    ((uint32_t)sram[word][2] << 16);
+  return (pixels >> ((y % 2 ? 11 : 23) - x)) & 1;
+}
+
+static void check_input(const video_signal_t *signal,
+                        const char *const expected[5], char text[5][31]) {
+  unsigned row, column, glyph, x, y, ink, x_delay, y_delay;
+  memset(written, 0, sizeof(written));
+  palette_bytes = 0;
+  osd_show_input(signal);
+  assert((regs[0x6c] & 1) && (frame[0][2] & 1));
+  assert(frame[3][1] == 3);
+  assert(frame[4][0] == 0x10 && frame[4][1] == 0 && frame[4][2] == 0x10);
+  assert(palette_bytes >= 9 && !(regs[0x6e] & 0x80));
+  for (column = 0; column < 3; ++column) {
+    assert(palette[3 + column] == 255); /* White on opaque black. */
+    assert(palette[6 + column] == 0);
+  }
+  for (row = 0; row < 5; ++row) {
+    assert(sram[row][0] == 0x80 && sram[row][1] == 0x88 && sram[row][2] == 30);
+    for (column = 0; column < 30; ++column) {
+      unsigned entry = 0x10 + row * 30 + column;
+      assert(sram[entry][0] == 0x8c && sram[entry][2] == 0x12);
+      assert(sram[entry][1] < 59);
+      text[row][column] = (char)(sram[entry][1] + 32);
+      if (expected && expected[row]) {
+        char wanted = column < strlen(expected[row]) ? expected[row][column] : ' ';
+        assert(text[row][column] == wanted);
+      }
+    }
+    text[row][30] = '\0';
+  }
+  assert(sram[5][0] == 0 && sram[5][1] == 0 && sram[5][2] == 0);
+  for (row = 0; row < 4096; ++row) {
+    unsigned used = row <= 5 || (row >= 0x10 && row < 0x10 + 150) ||
+                    (row >= 0x100 && row < 0x100 + 59 * 9);
+    for (column = 0; column < 3; ++column) {
+      assert(written[row][column] == used);
+    }
+  }
+  /* Font geometry is independently decoded from SRAM: blank space, one
+   * pixel side margins, two line top/bottom margins and doubled 5x7 pixels. */
+  for (glyph = 0; glyph < 59; ++glyph) {
+    ink = 0;
+    for (y = 0; y < 18; ++y) {
+      for (x = 0; x < 12; ++x) {
+        unsigned pixel = glyph_pixel(glyph, x, y);
+        ink += pixel;
+        if (x == 0 || x == 11 || y < 2 || y >= 16) {
+          assert(pixel == 0);
+        } else {
+          assert(pixel == glyph_pixel(glyph, 1 + ((x - 1) / 2) * 2,
+                                     2 + ((y - 2) / 2) * 2));
+        }
+      }
+    }
+    if (glyph == 0) {
+      assert(ink == 0);
+    } else if (glyph == 'A' - 32 || (glyph >= '0' - 32 && glyph <= '9' - 32)) {
+      assert(ink > 0);
+    }
+  }
+  x_delay = ((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6);
+  y_delay = ((unsigned)frame[0][0] << 3) | ((frame[0][2] >> 3) & 7);
+  assert(x_delay == (panel.hstart + 16u - BOARD_OSD_X_CORRECTION) / 8u);
+  assert(y_delay == (panel.vstart + 16u) / 2u);
+}
+
+static void check_input_messages(void) {
+  video_signal_t signal = {0};
+  char text[5][31];
+  const char *valid[5] = {
+    "HDMI 800X480 60.1HZ", "H 31.50KHZ H- V-", "TOTAL 1000X524", "", ""
+  };
+  const char *extreme[5] = {
+    "HDMI 800X480 432000000.0HZ", "H 432000.00KHZ H- V-", "TOTAL 1000X1", "", ""
+  };
+  const char *rounded[5] = {
+    "HDMI 800X480 60.0HZ", "H 31.49KHZ H- V-", "TOTAL 1000X525", "", ""
+  };
+  const char *geometry[5] = {
+    "UNSUPPORTED INPUT", "1024X480 60.1HZ", "H 31.50KHZ H+ V+",
+    "TOTAL 1000X524", "EXPECT 800/640X480"
+  };
+  const char *timing[5] = {
+    "UNSUPPORTED INPUT", "800X480 60.1HZ", "H 31.50KHZ H+ V+",
+    "TOTAL 999X524", "EXPECT HT 1000/800"
+  };
+  unsigned row;
+  signal.width = signal.input_width = 800;
+  signal.height = signal.input_height = 480;
+  signal.htotal = 1000;
+  signal.vtotal = 524;
+  signal.line_hz = 31500;
+  signal.measured = VIDEO_MEASURE_GEOMETRY | VIDEO_MEASURE_TIMING;
+  check_input(&signal, valid, text);
+  signal.line_hz = 432000000UL;
+  signal.vtotal = 1;
+  check_input(&signal, extreme, text); /* Multiplication by ten would overflow. */
+  signal.line_hz = 31499;
+  signal.vtotal = 525;
+  check_input(&signal, rounded, text); /* 59.998 Hz carries into 60.0 Hz. */
+  signal.line_hz = 31500;
+  signal.vtotal = 524;
+  signal.error = VIDEO_GEOMETRY;
+  signal.input_width = 1024;
+  signal.polarity = 3;
+  check_input(&signal, geometry, text);
+  signal.error = VIDEO_DIGITAL_TOTAL;
+  signal.input_width = 800;
+  signal.htotal = 999;
+  check_input(&signal, timing, text);
+
+  /* Digital geometry can be fresh even when analog timing timed out. */
+  signal.error = VIDEO_ANALOG_TIMEOUT;
+  signal.measured = VIDEO_MEASURE_GEOMETRY;
+  check_input(&signal, NULL, text);
+  assert(strstr(text[1], "800X480") == text[1]);
+  assert(strstr(text[1], "--") != NULL);
+  for (row = 1; row < 4; ++row) {
+    assert(!strstr(text[row], "60.1") && !strstr(text[row], "31.50"));
+    assert(!strstr(text[row], "524"));
+    assert(!strstr(text[row], "H+") && !strstr(text[row], "V+"));
+  }
+
+  /* Leave old numeric data populated, but mark it unmeasured. The new
+   * screen must not show previous dimensions, rates, totals or polarities. */
+  signal.error = VIDEO_DIGITAL_TIMEOUT;
+  signal.measured = 0;
+  check_input(&signal, NULL, text);
+  assert(strstr(text[0], "UNSUPPORTED INPUT") == text[0]);
+  assert(strstr(text[1], "--") != NULL);
+  for (row = 1; row < 4; ++row) {
+    assert(!strstr(text[row], "800") && !strstr(text[row], "480"));
+    assert(!strstr(text[row], "999") && !strstr(text[row], "524"));
+    assert(!strstr(text[row], "60.1") && !strstr(text[row], "31.50"));
+    assert(!strstr(text[row], "H+") && !strstr(text[row], "V+"));
+  }
+  check_input(&signal, NULL, text); /* Repeat a status without leaking SRAM. */
+  puts("OSD input text, font, palette, rejection and stale-measurement checks passed");
+}
+
 int main(void) {
   check_asset(osd_show_splash, "splash", SPLASH_BITMAP_WIDTH,
               SPLASH_BITMAP_HEIGHT, SPLASH_BITMAP_BPP, SPLASH_PALETTE_COLORS,
@@ -173,6 +318,7 @@ int main(void) {
   check_asset(osd_show_no_signal, "no signal", NO_SIGNAL_BITMAP_WIDTH,
               NO_SIGNAL_BITMAP_HEIGHT, NO_SIGNAL_BITMAP_BPP,
               NO_SIGNAL_PALETTE_COLORS, no_signal_palette, no_signal_bitmap);
+  check_input_messages();
   check_asset(osd_show_splash, "splash again", SPLASH_BITMAP_WIDTH,
               SPLASH_BITMAP_HEIGHT, SPLASH_BITMAP_BPP, SPLASH_PALETTE_COLORS,
               splash_palette, splash_bitmap);

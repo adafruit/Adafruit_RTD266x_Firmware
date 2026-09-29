@@ -126,6 +126,13 @@ static void reject_cases(void) {
       assert(signal.detail[0] == 13714 && signal.detail[1] == 524);
       assert(signal.detail[2] == (i == 4 ? 1 : 2));
     }
+    if (i == 6 || i == 7) {
+      assert(signal.measured == VIDEO_MEASURE_GEOMETRY);
+      assert(!signal.line_hz && !signal.vtotal && !signal.polarity);
+    } else if (i == 9) {
+      assert(!signal.measured && !signal.input_width && !signal.input_height);
+      assert(!signal.htotal && !signal.vtotal && !signal.line_hz);
+    }
   }
   fixture(800, 16000); /* 27 kHz: outside the admitted line-rate range. */
   assert(!video_measure(&signal));
@@ -135,6 +142,8 @@ static void reject_cases(void) {
   now = UINT32_MAX - 20;
   assert(!video_measure(&signal)); /* timeout remains bounded across wrap. */
   assert(signal.error == VIDEO_DIGITAL_TIMEOUT);
+  assert(!signal.measured && !signal.input_width && !signal.input_height);
+  assert(!signal.htotal && !signal.vtotal && !signal.line_hz && !signal.polarity);
   assert(!(registers[0][0x52] & 0x20));
   fixture(800, 13714);
   stalled = 0x40;
@@ -143,6 +152,35 @@ static void reject_cases(void) {
   assert(!(registers[0][0x52] & 0x40));
   assert(!video_measure(NULL));
   assert(!video_apply(NULL));
+}
+
+static void unsupported_metadata(void) {
+  video_signal_t signal;
+  fixture(1024, 16500);
+  measurement[1][0] = 5;
+  measurement[1][1] = 63; /* 1343, digital total counts one short. */
+  measurement[1][2] = 2;
+  measurement[1][3] = 255; /* 767, digital active height counts one short. */
+  measurement[0][2] = 0xc3;
+  measurement[0][3] = 38; /* 806 physical lines, both syncs positive. */
+  assert(!video_measure(&signal));
+  assert(signal.error == VIDEO_GEOMETRY);
+  assert(!signal.width && !signal.height && !signal.output_clock_hz);
+  assert(signal.measured == (VIDEO_MEASURE_GEOMETRY | VIDEO_MEASURE_TIMING));
+  assert(signal.input_width == 1024 && signal.input_height == 768);
+  assert(signal.htotal == 1344 && signal.vtotal == 806);
+  assert(signal.line_hz == 432000000UL / 16500 && signal.polarity == 3);
+  assert(signal.detail[0] == 1344 && signal.detail[1] == 1024 &&
+         signal.detail[2] == 768); /* Earlier digital error retains its detail. */
+
+  measurement[0][2] |= 0x20; /* Analog timeout cannot supersede geometry. */
+  assert(!video_measure(&signal));
+  assert(signal.error == VIDEO_GEOMETRY);
+  assert(signal.measured == VIDEO_MEASURE_GEOMETRY);
+  assert(signal.input_width == 1024 && signal.input_height == 768);
+  assert(!signal.vtotal && !signal.line_hz && !signal.polarity);
+  assert(signal.detail[0] == 1344 && signal.detail[1] == 1024 &&
+         signal.detail[2] == 768);
 }
 
 static void clock_range(void) {
@@ -201,6 +239,10 @@ int main(void) {
   assert(video_measure(&signal));
   assert(signal.error == VIDEO_OK && signal.detail[0] == 13714 &&
          signal.detail[1] == 524 && signal.detail[2] == 0);
+  assert(signal.measured == (VIDEO_MEASURE_GEOMETRY | VIDEO_MEASURE_TIMING));
+  assert(signal.input_width == 800 && signal.input_height == 480);
+  assert(signal.htotal == 1000 && signal.vtotal == 524);
+  assert(signal.line_hz == 432000000UL / 13714 && signal.polarity == 0);
   assert(signal.width == 800 && signal.height == 480);
   assert(signal.output_clock_hz == (uint32_t)(432000000000ULL / 13714));
   assert(video_apply(&signal));
@@ -226,6 +268,7 @@ int main(void) {
 
   signal.output_clock_hz = UINT32_MAX;
   assert(!video_apply(&signal));
+  unsupported_metadata();
   clock_range();
   reject_cases();
   puts("video: panel encoding, scaling, mode validation and timeout checks passed");

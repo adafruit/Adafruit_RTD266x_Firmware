@@ -29,6 +29,16 @@ this bitmap once. It remains visible through input qualification, then hides on
 successful video acquisition. No-signal artwork works with the startup splash
 disabled. The two images reuse OSD SRAM rather than being resident together.
 
+`osd_show_input()` replaces the bitmap with five rows of white text on opaque
+black, inset 16 pixels from the top left. Its original 5x7 diagnostic alphabet
+is expanded inside 12x18 glyphs and shown with global 2x zoom; character rows
+remain 1x. The same global zoom preserves the bitmap's calibrated frame origin.
+The input overlay lasts three seconds after acquisition, without pausing input
+monitoring. Rejected input keeps its measured geometry, estimated refresh,
+horizontal frequency, totals, polarity and first rejection reason visible.
+Unknown measurements appear as `--`; a digital timeout shows the no-signal card.
+The text and bitmap share SRAM and palette and replace one another on transitions.
+
 The SRAM port accepts Byte0, Byte1, Byte2 while each glyph's first scan line
 occupies bits 23:12. Before global zoom, horizontal frame delay uses four-pixel
 units and vertical delay uses lines. Global 2x zoom doubles those delays as
@@ -63,7 +73,7 @@ plane order were checked on the UC-586, followed by return to input video.
 | Control | Hardware basis | Project status |
 | --- | --- | --- |
 | Full-screen startup | Free-running display background plus a centered bitmap | One-second hold after bitmap upload; input video is enabled afterward |
-| Text menus | Row and character maps, proportional 12x18 tiles, 16-color palette, transparent background | Minimal splash driver; menu navigation and full font still needed |
+| Text menus | Row and character maps, proportional 12x18 tiles, 16-color palette, transparent background | Input-status text with an original diagnostic alphabet; menu navigation still needed |
 | Small graphic splash | 1-, 2- or 4-bit tiles in dedicated OSD SRAM, with shared palette and window effects | Automatic BMP conversion; one-bit or four-bit tiles, 15 visible colors plus transparency, 4x scale |
 | Video brightness | Per-channel RGB additive coefficients, separate from backlight power | Documented, not yet exposed or bench verified |
 | Video contrast | Per-channel RGB multiplicative coefficients | Documented, not yet exposed or bench verified |

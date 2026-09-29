@@ -18,6 +18,11 @@ enum {
   VIDEO_LINE_RATE = 10
 };
 
+enum {
+  VIDEO_MEASURE_GEOMETRY = 1,
+  VIDEO_MEASURE_TIMING = 2
+};
+
 typedef struct {
   uint16_t width;
   uint16_t height;
@@ -28,6 +33,16 @@ typedef struct {
    * Polarity bit0=positive H, bit1=positive V. Timeout data may be stale.
    */
   uint16_t detail[3];
+  /* Independent measurements, retained even when the mode is unsupported.
+   * Check measured flags before use; failed measurement fields stay zero.
+   */
+  uint16_t input_width;
+  uint16_t input_height;
+  uint16_t htotal;
+  uint16_t vtotal;
+  uint32_t line_hz;
+  uint8_t measured;
+  uint8_t polarity; /* bit0=positive H, bit1=positive V */
 } video_signal_t;
 
 void video_init(void);

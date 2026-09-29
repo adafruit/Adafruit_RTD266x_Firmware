@@ -36,6 +36,17 @@ for the same source. The manual pp48–50 documents the fractional horizontal
 measurement as a 16-line average and its four fractional bits in CR56.
 Both modes must measure 31.3–31.7 kHz with negative HS/VS.
 
+The input-status overlay reports geometry and timing independently of mode
+acceptance. A successful digital measurement retains active dimensions and
+horizontal total even when unsupported; a subsequent successful analog
+measurement adds line frequency, vertical count and polarity. Validity flags
+prevent timeout/overflow readings from appearing as current measurements.
+Estimated refresh is line frequency divided by the measured vertical count,
+rounded to 0.1 Hz; the observed 524/525 endpoint variation can change that
+estimate by 0.1 Hz. These are measured values, not an EDID mode label.
+The first failed acceptance check supplies the rejection reason. Existing
+trace diagnostic codes and their three detail fields retain their meaning.
+
 ## Output clock
 
 Manual pp131–135 describe DPLL divider encoding, charge-pump ratio, fine tuning,

@@ -55,6 +55,12 @@ the black background. It disappears when valid video returns. Customize it with
 `make NO_SIGNAL_BMP=path/to/my-no-signal.bmp check`; this works even with
 `SPLASH=0` and uses the same BMP dimensions, palette conversion and centering.
 
+On acquisition, a top-left overlay shows the input resolution, estimated refresh
+rate, horizontal frequency, sync polarity and measured totals for three seconds.
+Unsupported input keeps its measured settings and the first rejection reason on
+screen. Missing measurements display `--`; disconnected input retains the TV
+test card. These messages do not expand the supported video modes.
+
 `make TRACE=1` enables bench diagnostics in the EDID ASCII descriptor and MCU
 scratch registers. Its output directory ends in `-trace`. This changes the
 descriptor during measurement; use the default `TRACE=0` for ordinary display
@@ -153,9 +159,9 @@ including a binary/map check that all six interrupt vectors reach the linked
 handlers and a pixel-by-pixel reconstruction of the bitmap from OSD writes.
 BMP tests cover color preservation, palette reduction, transparent black,
 row/tile/plane ordering, size limits and unchanged generated output.
-The current default build uses 21,945 bytes of flash and 136 bytes
+The current default build uses 27,530 bytes of flash and 167 bytes
 of XRAM; its 64 KiB bank0 SHA256 is
-`adbbab1ce199a6d4e476053ed6220f3239392bbf46512eafc107bfeaad1f55f1`.
+`74dc5c69488b7a69bd52be3c80a1c649bf6a0b65d846b54408ddbd16696eee2a`.
 Programming verified all 512 KiB and restored the original protection byte
 `0x0C`. Builds, code and register notes are provided; stock firmware dumps and
 the preserved original flash tail are not distributed.

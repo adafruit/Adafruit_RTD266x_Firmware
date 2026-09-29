@@ -163,3 +163,221 @@ void osd_show_no_signal(void) {
   load_bitmap(1);
   show_bitmap();
 }
+
+/* Original five-column, seven-row diagnostic alphabet, doubled inside each
+ * 12x18 tile. No vendor firmware font is required. Digits, then A..Z. */
+static const OSD_CODE uint8_t text_font[][7] = {
+  {14,17,19,21,25,17,14}, {4,12,4,4,4,4,14},
+  {14,17,1,2,4,8,31}, {30,1,1,14,1,1,30},
+  {2,6,10,18,31,2,2}, {31,16,16,30,1,1,30},
+  {14,16,16,30,17,17,14}, {31,1,2,4,8,8,8},
+  {14,17,17,14,17,17,14}, {14,17,17,15,1,1,14},
+  {14,17,17,31,17,17,17}, {30,17,17,30,17,17,30},
+  {14,17,16,16,16,17,14}, {30,17,17,17,17,17,30},
+  {31,16,16,30,16,16,31}, {31,16,16,30,16,16,16},
+  {14,17,16,23,17,17,15}, {17,17,17,31,17,17,17},
+  {14,4,4,4,4,4,14}, {7,2,2,2,18,18,12},
+  {17,18,20,24,20,18,17}, {16,16,16,16,16,16,31},
+  {17,27,21,21,17,17,17}, {17,25,21,19,17,17,17},
+  {14,17,17,17,17,17,14}, {30,17,17,30,16,16,16},
+  {14,17,17,17,21,18,13}, {30,17,17,30,20,18,17},
+  {15,16,16,14,1,1,30}, {31,4,4,4,4,4,4},
+  {17,17,17,17,17,17,14}, {17,17,17,17,17,10,4},
+  {17,17,17,21,21,21,10}, {17,17,10,4,10,17,17},
+  {17,17,10,4,4,4,4}, {31,1,2,4,8,16,31}
+};
+
+static uint16_t text_scanline(uint8_t character, uint8_t y) {
+  uint8_t bits = 0, x;
+  uint16_t pixels = 0;
+  if (y < 2 || y >= 16) {
+    return 0;
+  }
+  y = (y - 2) / 2;
+  if (character >= '0' && character <= '9') {
+    bits = text_font[character - '0'][y];
+  } else if (character >= 'A' && character <= 'Z') {
+    bits = text_font[character - 'A' + 10][y];
+  } else if (character == '-' && y == 3) {
+    bits = 31;
+  } else if (character == '+') {
+    bits = y == 3 ? 31 : (y >= 1 && y <= 5 ? 4 : 0);
+  } else if (character == '.' && y == 6) {
+    bits = 4;
+  } else if (character == ':' && (y == 2 || y == 5)) {
+    bits = 4;
+  } else if (character == '/') {
+    bits = 1u << (y * 4 / 6);
+  }
+  for (x = 0; x < 5; ++x) {
+    if (bits & (16u >> x)) {
+      pixels |= 3u << (9 - x * 2);
+    }
+  }
+  return pixels;
+}
+
+#define TEXT_COLUMNS 30
+#define TEXT_ROWS 5
+static uint8_t text_row, text_column;
+
+static void text_put(char character) {
+  if (text_column < TEXT_COLUMNS) {
+    if (character < ' ' || character > 'Z') {
+      character = ' ';
+    }
+    write_word(OSD_SRAM | (OSD_MAP_BASE + text_row * TEXT_COLUMNS +
+                           text_column++), 0x8c, character - ' ', 0x12);
+  }
+}
+
+static void text_literal(const char *text) {
+  while (*text) {
+    text_put(*text++);
+  }
+}
+
+static void text_number(uint32_t number) {
+  uint32_t place = 1000000000UL;
+  uint8_t started = 0, digit;
+  while (place) {
+    digit = (uint8_t)(number / place);
+    if (digit || started || place == 1) {
+      text_put('0' + digit);
+      started = 1;
+    }
+    number %= place;
+    place /= 10;
+  }
+}
+
+static void text_next_row(void) {
+  while (text_column < TEXT_COLUMNS) {
+    text_put(' ');
+  }
+  ++text_row;
+  text_column = 0;
+}
+
+static void text_geometry(const video_signal_t *signal) {
+  uint32_t whole;
+  uint8_t fraction;
+  if (signal->measured & VIDEO_MEASURE_GEOMETRY) {
+    text_number(signal->input_width);
+    text_put('X');
+    text_number(signal->input_height);
+  } else {
+    text_literal("--X--");
+  }
+  text_put(' ');
+  if ((signal->measured & VIDEO_MEASURE_TIMING) && signal->vtotal &&
+      signal->line_hz) {
+    /* Keep the integer and fraction separate: even a rejected one-count
+     * period must not overflow while we explain its measured settings. */
+    whole = signal->line_hz / signal->vtotal;
+    fraction = (uint8_t)(((signal->line_hz % signal->vtotal) * 10 +
+                          signal->vtotal / 2) / signal->vtotal);
+    if (fraction == 10) {
+      ++whole;
+      fraction = 0;
+    }
+    text_number(whole);
+    text_put('.');
+    text_number(fraction);
+  } else {
+    text_literal("--");
+  }
+  text_literal("HZ");
+  text_next_row();
+}
+
+void osd_show_input(const video_signal_t *signal) {
+  uint8_t row, character, y;
+  uint16_t top, bottom;
+  uint16_t x = (panel.hstart + 16 - BOARD_OSD_X_CORRECTION) / 8;
+  uint16_t position_y = (panel.vstart + 16) / 2;
+  if (!signal) {
+    return;
+  }
+  osd_hide();
+  write_word(5, 0, 0, 0);
+  write_word(8, 0, 0, 0);
+  rtd_update(0, 0x6c, 0x1f, 0);
+  write_word(4, OSD_MAP_BASE & 0xff,
+             ((OSD_MAP_BASE >> 4) & 0xf0) | (OSD_FONT_BASE & 0x0f),
+             OSD_FONT_BASE >> 4);
+  for (row = 0; row < TEXT_ROWS; ++row) {
+    write_word(OSD_SRAM | row, 0x80, 17u << 3, TEXT_COLUMNS);
+  }
+  write_word(OSD_SRAM | TEXT_ROWS, 0, 0, 0);
+  select_word(OSD_ALL_BYTES | OSD_SRAM | OSD_FONT_BASE);
+  for (character = ' '; character <= 'Z'; ++character) {
+    for (y = 0; y < 18; y += 2) {
+      top = text_scanline(character, y);
+      bottom = text_scanline(character, y + 1);
+      rtd_write(0, 0x92, (uint8_t)bottom);
+      rtd_write(0, 0x92, (uint8_t)((top << 4) | (bottom >> 8)));
+      rtd_write(0, 0x92, (uint8_t)(top >> 4));
+    }
+  }
+  /* Index zero remains transparent; index two is opaque black. */
+  rtd_write(0, 0x6e, 0x80);
+  for (character = 0; character < 9; ++character) {
+    rtd_write(0, 0x6f, character >= 3 && character < 6 ? 255 : 0);
+  }
+  rtd_write(0, 0x6e, 0);
+  text_row = text_column = 0;
+  if (signal->error) {
+    text_literal("UNSUPPORTED INPUT");
+    text_next_row();
+  } else {
+    text_literal("HDMI ");
+  }
+  text_geometry(signal);
+  text_literal("H ");
+  if ((signal->measured & VIDEO_MEASURE_TIMING) && signal->line_hz) {
+    text_number(signal->line_hz / 1000);
+    text_put('.');
+    text_put('0' + (signal->line_hz / 100) % 10);
+    text_put('0' + (signal->line_hz / 10) % 10);
+    text_literal("KHZ H");
+    text_put(signal->polarity & 1 ? '+' : '-');
+    text_literal(" V");
+    text_put(signal->polarity & 2 ? '+' : '-');
+  } else {
+    text_literal("--KHZ H-- V--");
+  }
+  text_next_row();
+  text_literal("TOTAL ");
+  if (signal->measured & VIDEO_MEASURE_GEOMETRY) {
+    text_number(signal->htotal);
+  } else {
+    text_literal("--");
+  }
+  text_put('X');
+  if (signal->measured & VIDEO_MEASURE_TIMING) {
+    text_number(signal->vtotal);
+  } else {
+    text_literal("--");
+  }
+  text_next_row();
+  switch (signal->error) {
+    case VIDEO_GEOMETRY: text_literal("EXPECT 800/640X480"); break;
+    case VIDEO_DIGITAL_TOTAL: text_literal("EXPECT HT 1000/800"); break;
+    case VIDEO_POLARITY: text_literal("EXPECT H- V-"); break;
+    case VIDEO_VERTICAL_TOTAL: text_literal("EXPECT VT 524/525"); break;
+    case VIDEO_LINE_RATE: text_literal("EXPECT H 31.30-31.70KHZ"); break;
+    case VIDEO_ZERO_PERIOD: text_literal("ZERO SYNC PERIOD"); break;
+    case VIDEO_ANALOG_TIMEOUT: text_literal("SYNC MEASUREMENT TIMEOUT"); break;
+    case VIDEO_ANALOG_OVERFLOW: text_literal("SYNC COUNTER OVERFLOW"); break;
+    case VIDEO_DIGITAL_OVERFLOW: text_literal("PIXEL COUNTER OVERFLOW"); break;
+    case VIDEO_DIGITAL_TIMEOUT: text_literal("PIXEL MEASUREMENT TIMEOUT"); break;
+  }
+  while (text_row < TEXT_ROWS) {
+    text_next_row();
+  }
+  write_word(3, 0, 3, 0);
+  write_word(0, (uint8_t)(position_y >> 3), (uint8_t)(x >> 2),
+             (uint8_t)(((x & 3) << 6) | ((position_y & 7) << 3) | 1));
+  rtd_update(0, 0x6c, 1, 1);
+}

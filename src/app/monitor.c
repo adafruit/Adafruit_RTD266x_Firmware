@@ -12,6 +12,24 @@
 #endif
 
 #define SPLASH_DURATION_MS 1000
+#define INPUT_INFO_DURATION_MS 3000
+
+static video_signal_t shown_signal;
+
+/* Ignore small measurement jitter while keeping changed rejected settings
+ * visible. Compare measured fields, never the possibly stale trace details. */
+static uint8_t input_info_changed(const video_signal_t *signal) {
+  uint32_t difference = signal->line_hz > shown_signal.line_hz ?
+      signal->line_hz - shown_signal.line_hz :
+      shown_signal.line_hz - signal->line_hz;
+  return signal->error != shown_signal.error ||
+         signal->measured != shown_signal.measured ||
+         signal->input_width != shown_signal.input_width ||
+         signal->input_height != shown_signal.input_height ||
+         signal->htotal != shown_signal.htotal ||
+         signal->vtotal != shown_signal.vtotal ||
+         signal->polarity != shown_signal.polarity || difference > 50;
+}
 
 /* Application policy lives here; register setup belongs to the drivers.
  * Two matching samples acquire a mode. Signal loss blanks immediately.
@@ -20,7 +38,8 @@
 void main(void) {
   video_signal_t signal;
   uint16_t displayed_width = 0, candidate_width = 0;
-  uint8_t matching_samples = 0, no_signal_visible = 0;
+  uint8_t matching_samples = 0, screen = 0;
+  uint32_t info_started = 0;
 
   platform_init();
   mcu_write(0x19, 'N'); /* New firmware; scratch register, not flash. */
@@ -43,9 +62,15 @@ void main(void) {
   for (;;) {
     if (!video_measure(&signal)) {
       video_blank(1);
-      if (!no_signal_visible) {
-        osd_show_no_signal();
-        no_signal_visible = 1;
+      if (signal.error == VIDEO_DIGITAL_TIMEOUT) {
+        if (screen != 1) {
+          osd_show_no_signal();
+          screen = 1;
+        }
+      } else if (screen != 2 || input_info_changed(&signal)) {
+        osd_show_input(&signal);
+        shown_signal = signal;
+        screen = 2;
       }
       displayed_width = candidate_width = 0;
       matching_samples = 0;
@@ -56,8 +81,9 @@ void main(void) {
         matching_samples = 1;
       } else if (++matching_samples >= 2) {
         if (video_apply(&signal)) {
-          osd_hide();
-          no_signal_visible = 0;
+          osd_show_input(&signal);
+          info_started = platform_millis();
+          screen = 3;
           displayed_width = signal.width;
           mcu_write(0xf2, 4);
         }
@@ -65,6 +91,11 @@ void main(void) {
       }
     } else {
       candidate_width = matching_samples = 0;
+    }
+    if (screen == 3 &&
+        (uint32_t)(platform_millis() - info_started) >= INPUT_INFO_DURATION_MS) {
+      osd_hide();
+      screen = 0;
     }
 #if RTD_TRACE
     diagnostics_measurement(signal.error, signal.detail[0], signal.detail[1],

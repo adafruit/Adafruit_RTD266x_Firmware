@@ -237,12 +237,17 @@ uint8_t video_measure(video_signal_t *signal) {
   uint16_t period;
   uint32_t line_hz;
   uint8_t status;
+  uint8_t polarity;
 
   if (!signal)
     return 0;
   signal->width = signal->height = 0;
   signal->output_clock_hz = 0;
   signal->error = VIDEO_OK;
+  signal->input_width = signal->input_height = 0;
+  signal->htotal = signal->vtotal = 0;
+  signal->line_hz = 0;
+  signal->measured = signal->polarity = 0;
   status = measure(1);
   /* UC-586 digital counters are one short; analog periods are not. */
   rtd_update(0, MEASURE_SELECT, 0x01, 0);
@@ -257,27 +262,42 @@ uint8_t video_measure(video_signal_t *signal) {
     signal->error = status == 1 ? VIDEO_DIGITAL_TIMEOUT : VIDEO_DIGITAL_OVERFLOW;
     return 0;
   }
+  signal->input_width = width;
+  signal->input_height = signal->detail[2];
+  signal->htotal = total;
+  signal->measured = VIDEO_MEASURE_GEOMETRY;
   if ((width != 800 && width != 640) || signal->detail[2] != 480) {
     signal->error = VIDEO_GEOMETRY;
-    return 0;
-  }
-  if (total != (width == 640 ? 800 : 1000)) {
+  } else if (total != (width == 640 ? 800 : 1000)) {
     signal->error = VIDEO_DIGITAL_TOTAL;
-    return 0;
   }
 
+  /* Unsupported geometry still deserves a useful measured timing report.
+   * Keep its earlier error and digital detail if analog measurement fails.
+   */
   status = measure(0);
   total = measured_count(MEASURE_V);
   period = (measured_count(MEASURE_H) << 4) |
            (rtd_read(0, MEASURE_ACTIVE) & 0x0f);
-  signal->detail[0] = period;
-  signal->detail[1] = total;
-  signal->detail[2] = rtd_read(0, MEASURE_V) >> 6;
+  polarity = rtd_read(0, MEASURE_V) >> 6;
+  if (!signal->error) {
+    signal->detail[0] = period;
+    signal->detail[1] = total;
+    signal->detail[2] = polarity;
+  }
   if (status) {
-    signal->error = status == 1 ? VIDEO_ANALOG_TIMEOUT : VIDEO_ANALOG_OVERFLOW;
+    if (!signal->error)
+      signal->error = status == 1 ? VIDEO_ANALOG_TIMEOUT : VIDEO_ANALOG_OVERFLOW;
     return 0;
   }
-  if (signal->detail[2]) {
+  signal->vtotal = total;
+  signal->polarity = polarity;
+  line_hz = period ? 432000000UL / period : 0;
+  signal->line_hz = line_hz;
+  signal->measured |= VIDEO_MEASURE_TIMING;
+  if (signal->error)
+    return 0;
+  if (polarity) {
     signal->error = VIDEO_POLARITY;
     return 0;
   }
@@ -289,7 +309,7 @@ uint8_t video_measure(video_signal_t *signal) {
     signal->error = VIDEO_ZERO_PERIOD;
     return 0;
   }
-  line_hz = 432000000UL / period; /* 27 MHz crystal, 16-line average. */
+  /* 27 MHz crystal, 16-line average. */
   if (line_hz < 31300UL || line_hz > 31700UL) {
     signal->error = VIDEO_LINE_RATE;
     return 0;
