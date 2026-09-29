@@ -475,7 +475,7 @@ void osd_show_menu_preview(uint8_t page, uint8_t variant) {
   text_next_row();
   switch (page) {
   case OSD_PREVIEW_PICTURE:
-    preview_number("BRIGHTNESS", value, "%", variant == 0);
+    preview_number("IMAGE BRIGHTNESS", value, "%", variant == 0);
     preview_slider(value);
     preview_number("CONTRAST", 100 - value, "%", variant == 1);
     preview_slider(100 - value);
@@ -489,7 +489,7 @@ void osd_show_menu_preview(uint8_t page, uint8_t variant) {
     preview_choice("CHANNELS", "STEREO", 0, 0);
     break;
   case OSD_PREVIEW_DISPLAY:
-    preview_number("BACKLIGHT", value, "%", variant == 0);
+    preview_number("LED BACKLIGHT", value, "%", variant == 0);
     preview_slider(value);
     preview_choice("ASPECT", variant == 1 ? "FILL" : "KEEP", variant == 1, 0);
     preview_choice("ROTATION", "--", 0, 1);

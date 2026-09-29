@@ -52,6 +52,10 @@ Font upload adds time between pages. All values are artwork samples: the preview
 does not read buttons or change video, audio, backlight or stored settings.
 The normal build leaves the preview disabled.
 
+Picture labels its pixel adjustment `IMAGE BRIGHTNESS`; Display labels its
+panel-light adjustment `LED BACKLIGHT`. These are separate controls, each with
+its own percentage and slider. Both are still preview values pending controls.
+
 The seven-row, 30-column layout is centered at 720x252 panel pixels. It reuses
 the diagnostic alphabet, adding a percent glyph, and uses green titles, blue
 selection rows and green/gray slider tracks. The map ends before the font base.

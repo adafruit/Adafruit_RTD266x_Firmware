@@ -340,7 +340,7 @@ static void check_input_messages(void) {
 static void check_menu_preview(void) {
   const char *titles[] = {" ADAFRUIT MENU PREVIEW", " PICTURE / PREVIEW",
       " AUDIO / PREVIEW", " DISPLAY / PREVIEW", " MENU SETTINGS / PREVIEW"};
-  const char *first[] = {"PICTURE", "BRIGHTNESS", "VOLUME", "BACKLIGHT", "TIMEOUT"};
+  const char *first[] = {"PICTURE", "IMAGE BRIGHTNESS", "VOLUME", "LED BACKLIGHT", "TIMEOUT"};
   unsigned page, variant, row, column, x_delay, y_delay;
   char text[7][31];
   for (page = 0; page < OSD_PREVIEW_COUNT; ++page) {
