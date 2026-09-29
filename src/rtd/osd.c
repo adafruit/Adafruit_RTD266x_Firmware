@@ -36,6 +36,7 @@ CHECK_BITMAP(SPLASH, splash);
 CHECK_BITMAP(NO_SIGNAL, no_signal);
 
 static uint16_t active_width, active_height;
+static uint8_t visible;
 
 static void select_word(uint16_t address) {
   /* This small layout stays below the extended SRAM bank at 12 KiB. */
@@ -65,10 +66,20 @@ static void set_frame(uint8_t enabled) {
 }
 
 void osd_hide(void) {
+  visible = 0;
   rtd_update(0, 0x6c, 0x01, 0);
   write_word(0, 0, 0, 0);
   /* Manual p383 requires global double width off when OSD is inactive. */
   write_word(3, 0, 0, 0);
+}
+
+void osd_service(void) {
+  /* CR6C.0 is cleared by automatic background switching (manual p65).
+   * Preserve the requested overlay across capture/frame-sync transitions.
+   */
+  if (visible && !(rtd_read(0, 0x6c) & 1)) {
+    rtd_update(0, 0x6c, 1, 1);
+  }
 }
 
 static void load_bitmap(uint8_t missing_input) {
@@ -151,6 +162,7 @@ static void show_bitmap(void) {
   /* Global 2x width/height scales the already doubled character rows. */
   write_word(3, 0, 0x03, 0);
   set_frame(1);
+  visible = 1;
   rtd_update(0, 0x6c, 0x01, 0x01);
 }
 
@@ -219,7 +231,7 @@ static uint16_t text_scanline(uint8_t character, uint8_t y) {
 
 #define TEXT_COLUMNS 30
 #define TEXT_ROWS 5
-static uint8_t text_row, text_column;
+static uint8_t text_row, text_column, text_color;
 
 static void text_put(char character) {
   if (text_column < TEXT_COLUMNS) {
@@ -227,7 +239,7 @@ static void text_put(char character) {
       character = ' ';
     }
     write_word(OSD_SRAM | (OSD_MAP_BASE + text_row * TEXT_COLUMNS +
-                           text_column++), 0x8c, character - ' ', 0x12);
+                           text_column++), 0x8c, character - ' ', text_color);
   }
 }
 
@@ -291,14 +303,9 @@ static void text_geometry(const video_signal_t *signal) {
   text_next_row();
 }
 
-void osd_show_input(const video_signal_t *signal) {
+static void text_begin(void) {
   uint8_t row, character, y;
   uint16_t top, bottom;
-  uint16_t x = (panel.hstart + 16 - BOARD_OSD_X_CORRECTION) / 8;
-  uint16_t position_y = (video_display_vstart() + 16) / 2;
-  if (!signal) {
-    return;
-  }
   osd_hide();
   write_word(5, 0, 0, 0);
   write_word(8, 0, 0, 0);
@@ -327,6 +334,16 @@ void osd_show_input(const video_signal_t *signal) {
   }
   rtd_write(0, 0x6e, 0);
   text_row = text_column = 0;
+  text_color = 0x12;
+}
+
+void osd_show_input(const video_signal_t *signal) {
+  uint16_t x = (panel.hstart + 16 - BOARD_OSD_X_CORRECTION) / 8;
+  uint16_t position_y = (video_display_vstart() + 16) / 2;
+  if (!signal) {
+    return;
+  }
+  text_begin();
   if (signal->error) {
     text_literal("UNSUPPORTED INPUT");
     text_next_row();
@@ -386,5 +403,35 @@ void osd_show_input(const video_signal_t *signal) {
   write_word(3, 0, 3, 0);
   write_word(0, (uint8_t)(position_y >> 3), (uint8_t)(x >> 2),
              (uint8_t)(((x & 3) << 6) | ((position_y & 7) << 3) | 1));
+  visible = 1;
   rtd_update(0, 0x6c, 1, 1);
+}
+
+void osd_show_menu_preview(void) {
+  text_begin();
+  /* Palette 3: selection blue; palette 4: Adafruit green title. */
+  rtd_write(0, 0x6e, 0x89);
+  rtd_write(0, 0x6f, 16);
+  rtd_write(0, 0x6f, 64);
+  rtd_write(0, 0x6f, 160);
+  rtd_write(0, 0x6f, 0);
+  rtd_write(0, 0x6f, 220);
+  rtd_write(0, 0x6f, 120);
+  rtd_write(0, 0x6e, 0);
+  text_color = 0x42;
+  text_literal(" ADAFRUIT MENU PREVIEW");
+  text_next_row();
+  text_color = 0x13;
+  text_literal(" PICTURE");
+  text_next_row();
+  text_color = 0x12;
+  text_literal(" AUDIO");
+  text_next_row();
+  text_literal(" DISPLAY");
+  text_next_row();
+  text_literal(" MENU SETTINGS");
+  text_next_row();
+  active_width = TEXT_COLUMNS * 24u;
+  active_height = TEXT_ROWS * 36u;
+  show_bitmap();
 }

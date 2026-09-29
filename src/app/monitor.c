@@ -12,6 +12,10 @@
 #define RTD_SPLASH 0
 #endif
 
+#ifndef RTD_MENU_PREVIEW
+#define RTD_MENU_PREVIEW 0
+#endif
+
 #define SPLASH_DURATION_MS 1000
 #define INPUT_INFO_DURATION_MS 3000
 
@@ -58,6 +62,11 @@ void main(void) {
   video_background(0, 0, 0);
   osd_show_splash();
   platform_delay_ms(SPLASH_DURATION_MS);
+  osd_hide();
+#endif
+#if RTD_MENU_PREVIEW
+  osd_show_menu_preview();
+  platform_delay_ms(10000);
   osd_hide();
 #endif
 
@@ -110,6 +119,7 @@ void main(void) {
      */
     for (audio_tick = 0; audio_tick < 25; ++audio_tick) {
       if (displayed_mode != VIDEO_MODE_NONE) video_service();
+      osd_service();
       audio_service(platform_millis(), displayed_mode != VIDEO_MODE_NONE);
       platform_delay_ms(10);
     }

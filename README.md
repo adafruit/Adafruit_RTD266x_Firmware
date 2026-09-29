@@ -107,6 +107,10 @@ CS4334 DAC. See [audio support and validation](docs/audio.md) for its current
 bench status and limits. A complete menu, settings persistence, audio volume
 controls and arbitrary video modes are not implemented.
 
+Build with `make MENU_PREVIEW=1` to review the menu artwork on the display for
+ten seconds after the splash. This opt-in preview has no button actions yet;
+normal builds proceed directly from the splash to video acquisition.
+
 ## Programming
 
 Use the included [Feather tester/programmer](tools/tester/README.md).
@@ -168,15 +172,18 @@ including a binary/map check that all six interrupt vectors reach the linked
 handlers and a pixel-by-pixel reconstruction of the bitmap from OSD writes.
 BMP tests cover color preservation, palette reduction, transparent black,
 row/tile/plane ordering, size limits and unchanged generated output.
-The current default build uses 31,970 bytes of flash and 183 bytes
+The current default build uses 32,364 bytes of flash and 185 bytes
 of XRAM; its 64 KiB bank0 SHA256 is
-`cfe76d26529bca1022987db2805220712bf995cb695b6c7da1e248e9abcf6c22`.
+`52be08f4ed1c904ffb8a4a13e1c32e0362170505a4402247b8951b0598515092`.
 Programming verified all 512 KiB and restored the original protection byte
 `0x0C`. Builds, code and register notes are provided; stock firmware dumps and
 the preserved original flash tail are not distributed.
 
 The RP2350 HSTX audio test confirmed a clean 1 kHz analog tone from the UC-586
 headphone jack, muting on source loss and recovery with video. Splash, no-signal
-artwork and the scaled grid remained visible. The input timing overlay did not
-appear in this run's captures and needs further investigation. See the
+artwork and the scaled grid remained visible. The input timing overlay was
+subsequently restored by preserving its enable across hardware background
+transitions; camera captures confirmed the timing text and its later expiry.
+The opt-in menu preview's text and colored selection bar were also verified.
+See the
 [audio measurements and limits](docs/audio.md#validation).

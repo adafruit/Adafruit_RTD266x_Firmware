@@ -7,11 +7,15 @@ SPLASH ?= 1
 SPLASH_BMP ?= assets/splash.bmp
 NO_SIGNAL_BMP ?= assets/no-signal.bmp
 TRACE ?= 0
+MENU_PREVIEW ?= 0
 SDCC ?= sdcc
 HOST_CC ?= cc
 OUT := build/$(BOARD)-$(PANEL)-$(APP)-splash$(SPLASH)
 ifeq ($(TRACE),1)
 OUT := $(OUT)-trace
+endif
+ifeq ($(MENU_PREVIEW),1)
+OUT := $(OUT)-menu-preview
 endif
 
 SOURCES := src/platform/io.c src/platform/mcs51.c src/platform/ddc.c \
@@ -25,7 +29,7 @@ NO_SIGNAL_HEADER := $(OUT)/generated/no_signal_bitmap.h
 OSD_TEST := $(OUT)/tests/osd_test
 CFLAGS := -mmcs51 --std-c11 --model-large --stack-auto --no-xinit-opt \
           -Iinclude -Iboards/$(BOARD) -I$(OUT)/generated \
-          -DRTD_SPLASH=$(SPLASH) -DRTD_TRACE=$(TRACE)
+          -DRTD_SPLASH=$(SPLASH) -DRTD_TRACE=$(TRACE) -DRTD_MENU_PREVIEW=$(MENU_PREVIEW)
 LDFLAGS := --xram-loc 0xfb00 --xram-size 512 --code-size 65536
 
 .PHONY: all firmware check FORCE

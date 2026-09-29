@@ -38,6 +38,25 @@ monitoring. Rejected input keeps its measured geometry, estimated refresh,
 horizontal frequency, totals, polarity and first rejection reason visible.
 Unknown measurements appear as `--`; a digital timeout shows the no-signal card.
 The text and bitmap share SRAM and palette and replace one another on transitions.
+The scaler can clear CR6C.0 when it automatically switches to background
+(manual p65). `osd_service()` restores that port while the renderer has a visible
+overlay; `osd_hide()` cancels restoration. This fixed the missing input overlay
+on the UC-586's transition into live HSTX video. Camera captures then showed
+640x480, approximately 60.2 Hz, 31.53 kHz and totals 800x524 at the top left,
+followed by unobstructed video after expiry.
+
+`make MENU_PREVIEW=1` adds a ten-second static menu artwork preview after the
+startup splash. It uses the same text renderer, with a green title and a blue
+selection row, before returning to normal input acquisition. Picture, Audio,
+Display and Menu Settings are layout placeholders; this preview does not read
+buttons or change settings. The normal build leaves the preview disabled.
+On the UC-586, a camera capture confirmed readable text, the title color, the
+full-width selection bar and return to video after the preview interval.
+
+The [classic RTD2660 Adafruit guide](https://learn.adafruit.com/hdmi-uberguide/rtd2660-hdmi-vga-ntsc-pal-driver-board)
+includes photographed Color, OSD and Function menus. Its Menu/select,
+Auto/back and plus/minus navigation is a reference for the future interaction;
+the artwork and rendering code here are independently implemented.
 
 The SRAM port accepts Byte0, Byte1, Byte2 while each glyph's first scan line
 occupies bits 23:12. Before global zoom, horizontal frame delay uses four-pixel

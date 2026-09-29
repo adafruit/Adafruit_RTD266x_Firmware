@@ -18,7 +18,7 @@
 static uint8_t regs[256], frame[16][3], sram[4096][3];
 static uint8_t written[4096][3], palette[48];
 static uint16_t address;
-static unsigned lane, palette_bytes;
+static unsigned lane, palette_bytes, palette_index;
 static uint16_t runtime_vstart = 32;
 
 uint16_t video_display_vstart(void) {
@@ -54,9 +54,12 @@ void rtd_write(uint8_t page, uint8_t reg, uint8_t value) {
       lane = 0;
       ++address;
     }
+  } else if (reg == 0x6e) {
+    palette_index = value & 0x3f;
   } else if (reg == 0x6f) {
-    assert(regs[0x6e] == 0x80 && palette_bytes < sizeof(palette));
-    palette[palette_bytes++] = value;
+    assert((regs[0x6e] & 0x80) && palette_index < sizeof(palette));
+    palette[palette_index++] = value;
+    ++palette_bytes;
   }
 }
 
@@ -334,6 +337,31 @@ static void check_input_messages(void) {
   puts("OSD input text, font, palette, rejection and stale-measurement checks passed");
 }
 
+static void check_menu_preview(void) {
+  const char *rows[] = {" ADAFRUIT MENU PREVIEW", " PICTURE", " AUDIO",
+                        " DISPLAY", " MENU SETTINGS"};
+  unsigned row, column, x_delay, y_delay;
+  palette_bytes = 0;
+  osd_show_menu_preview();
+  assert((regs[0x6c] & 1) && (frame[0][2] & 1));
+  assert(palette_bytes == 15 && frame[3][1] == 3);
+  assert(palette[9] == 16 && palette[10] == 64 && palette[11] == 160);
+  assert(palette[12] == 0 && palette[13] == 220 && palette[14] == 120);
+  for (row = 0; row < 5; ++row) {
+    for (column = 0; column < 30; ++column) {
+      unsigned entry = 0x10 + row * 30 + column;
+      char expected = column < strlen(rows[row]) ? rows[row][column] : ' ';
+      assert((char)(sram[entry][1] + 32) == expected);
+      assert(sram[entry][2] == (row == 0 ? 0x42 : row == 1 ? 0x13 : 0x12));
+    }
+  }
+  x_delay = ((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6);
+  y_delay = ((unsigned)frame[0][0] << 3) | ((frame[0][2] >> 3) & 7);
+  assert(x_delay * 8 + BOARD_OSD_X_CORRECTION - panel.hstart == 40);
+  assert(y_delay * 2 - runtime_vstart == 150);
+  puts("OSD menu preview text, highlight, palette and centering passed");
+}
+
 int main(void) {
   check_asset(osd_show_splash, "splash", SPLASH_BITMAP_WIDTH,
               SPLASH_BITMAP_HEIGHT, SPLASH_BITMAP_BPP, SPLASH_PALETTE_COLORS,
@@ -341,11 +369,16 @@ int main(void) {
   check_asset(osd_show_no_signal, "no signal", NO_SIGNAL_BITMAP_WIDTH,
               NO_SIGNAL_BITMAP_HEIGHT, NO_SIGNAL_BITMAP_BPP,
               NO_SIGNAL_PALETTE_COLORS, no_signal_palette, no_signal_bitmap);
+  check_menu_preview();
   check_input_messages();
+  regs[0x6c] = 0x20; /* Hardware background transition cleared the port. */
+  osd_service();
+  assert(regs[0x6c] == 0x21);
   check_asset(osd_show_splash, "splash again", SPLASH_BITMAP_WIDTH,
               SPLASH_BITMAP_HEIGHT, SPLASH_BITMAP_BPP, SPLASH_PALETTE_COLORS,
               splash_palette, splash_bitmap);
   osd_hide();
+  osd_service(); /* An expired overlay must not be resurrected. */
   assert(!(regs[0x6c] & 1) && !(frame[0][2] & 1));
   assert(frame[3][0] == 0 && frame[3][1] == 0 && frame[3][2] == 0);
   puts("OSD asset switching and hide passed");

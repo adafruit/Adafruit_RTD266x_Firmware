@@ -86,5 +86,6 @@ faults have host-model coverage or deliberate rejection, not bench validation.
 The RP2350 also programmed the display over HDMI DDC without a cable swap.
 Full 512 KiB readback matched and flash protection returned to 0x0C. The new
 256-byte EDID read back with both checksums valid. Camera checks confirmed the
-splash, no-signal artwork, scaled grid and video recovery. The three-second
-input timing overlay did not appear in the captures and remains unresolved.
+splash, no-signal artwork, scaled grid and video recovery. A later OSD fix
+restored the input timing overlay by maintaining its enable across hardware
+background transitions; camera captures confirmed visible text and expiry.
