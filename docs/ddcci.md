@@ -71,6 +71,7 @@ captures showed unchanged brightness. Level adjustment is therefore disabled;
 `board_backlight_available()` returns false. Separate `board_backlight_power()`
 uses P6.4 (pin 54), `0xFFCB` bit 0, following the stock button's output path.
 The gate's physical backlight-off and wake behavior was verified on the UC-586.
+Limor also confirmed continuity from the boost IC's EN to pin 54 on 2026-09-29.
 This provides on/off control, not adjustable LED brightness.
 
 ## Transport and validation

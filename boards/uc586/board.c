@@ -51,6 +51,7 @@ uint8_t board_backlight_power(uint8_t on) {
   /* Stock's button path toggles P6.4/pin54 (FFCB bit0), configured as
    * push-pull by the existing pin setup. Active-high backlight on/off and
    * wake after signal loss were camera-verified with this firmware.
+   * Limor's continuity check confirmed pin54 connects to the boost IC's EN.
    */
   mcu_update(0xcb, 0x01, on ? 1 : 0);
   return 1;

@@ -306,3 +306,8 @@ Separate `board_backlight_power()` drives the stock button's P6.4/pin 54 output
 through `0xFFCB` bit 0. Camera checks verified a dark panel on soft power off,
 recovery on power on, and no-signal backlight sleep followed by visible wake
 when valid video returned. No dimming capability is implied by this on/off gate.
+
+On 2026-09-29, Limor confirmed by multimeter continuity that the six-pin
+backlight boost IC's EN connects to RTD2660H pin 54 (P6.4). This establishes the
+board connection independently of the firmware and camera tests. The boost
+IC's identity and whether EN supports PWM dimming remain unverified.
