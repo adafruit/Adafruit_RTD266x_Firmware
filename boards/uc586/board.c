@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: MIT
-#include <8052.h>
 #include "rtd/board.h"
 #include "rtd/io.h"
+
+#ifdef __SDCC_mcs51
+#include <8052.h>
+#else
+/* Host register-model tests provide these five 8051 port latches. */
+extern volatile uint8_t P1, P3_3, P3_4, P3_5, P3_6;
+#endif
 
 void board_init(void) {
   uint8_t i;
@@ -24,6 +30,8 @@ void board_init(void) {
   mcu_write(0xc9, 1);
   mcu_update(0x96, 7, 2);
   for (i = 0; i < sizeof(pin_modes); ++i) mcu_write(0x97 + i, pin_modes[i]);
+
+  board_backlight_power(1);
 }
 
 uint8_t board_buttons(void) {
@@ -34,6 +42,16 @@ uint8_t board_buttons(void) {
 uint8_t board_backlight_available(void) { return 0; }
 
 uint8_t board_backlight_set(uint8_t percent) {
+  /* PWM1 changes produced no visible brightness change on the UC-586. */
   (void)percent;
   return 0;
+}
+
+uint8_t board_backlight_power(uint8_t on) {
+  /* Stock's button path toggles P6.4/pin54 (FFCB bit0), configured as
+   * push-pull by the existing pin setup. Active-high backlight on/off and
+   * wake after signal loss were camera-verified with this firmware.
+   */
+  mcu_update(0xcb, 0x01, on ? 1 : 0);
+  return 1;
 }

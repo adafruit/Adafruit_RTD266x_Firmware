@@ -29,6 +29,8 @@ SECTOR_SIZE = 4096
 PAGE_SIZE = 256
 PATTERNS = ("bars", "checker", "red", "green", "blue", "gray", "black",
             "white", "grid", "text")
+VIRTUAL_KEYS = {"menu": 1, "back": 2, "up": 4, "down": 8, "power": 16}
+DDC_CI_GAP_SECONDS = 0.05
 
 
 class TesterError(Exception):
@@ -159,6 +161,24 @@ class Client:
             if progress and (len(result) % 65536 == 0 or len(result) == size):
                 progress(len(result), size)
         return bytes(result)
+
+    def ddc_write(self, packet):
+        """Write one live DDC/CI packet; the HSTX tester keeps video running."""
+        if not isinstance(packet, bytes) or not 1 <= len(packet) <= 32:
+            raise TesterError("DDC write requires 1..32 bytes")
+        response = self.command(f"ddc {packet.hex()} 0")
+        # The host waits while the Feather resumes audio and the RTD parses.
+        time.sleep(DDC_CI_GAP_SECONDS)
+        if response.get("written") != len(packet):
+            raise TesterError("DDC write returned the wrong byte count; not retried")
+
+    def ddc_read(self, length):
+        """Read once, then allow the RTD FIFO to return to receiving requests."""
+        if type(length) is not int or not 1 <= length <= 32:
+            raise TesterError("DDC read requires a length of 1..32 bytes")
+        response = self.command(f"ddc - {length}")
+        time.sleep(DDC_CI_GAP_SECONDS)
+        return hex_data(response, length)
 
 
 def hex_data(response, length):
@@ -540,6 +560,57 @@ def restore_protection(port, usb_serial, image, status, receipt):
     return result
 
 
+def ddc_checksum(data, seed):
+    """VESA DDC/CI XOR: request includes 0x6e; reply substitutes host 0x50."""
+    value = seed
+    for byte in data:
+        value ^= byte
+    return value
+
+
+def ddc_packet(payload):
+    if not isinstance(payload, bytes) or not 1 <= len(payload) <= 29:
+        raise TesterError("DDC payload must fit a 32-byte transaction")
+    # Host source address, protocol length flag, command payload, checksum.
+    packet = bytes((0x51, 0x80 | len(payload))) + payload
+    return packet + bytes((ddc_checksum(packet, 0x6e),))
+
+
+def vcp_get(client, code):
+    if type(code) is not int or not 0 <= code <= 255:
+        raise TesterError("VCP code must be 0..255")
+    client.ddc_write(ddc_packet(bytes((0x01, code))))
+    reply = client.ddc_read(11)
+    if reply[:2] == b"\x6e\x80" and ddc_checksum(reply[:3], 0x50) == 0:
+        raise TesterError("Display returned a DDC/CI null response; no VCP value available")
+    if ddc_checksum(reply, 0x50) != 0:
+        raise TesterError("DDC/CI reply checksum mismatch")
+    if reply[:3] != b"\x6e\x88\x02":
+        raise TesterError("Invalid DDC/CI Get VCP reply header or length")
+    if reply[4] != code:
+        raise TesterError("DDC/CI reply contains the wrong VCP code")
+    if reply[3] != 0:
+        raise TesterError(f"Display rejected VCP 0x{code:02X}, result 0x{reply[3]:02X}")
+    if reply[5] not in (0, 1):
+        raise TesterError("Invalid DDC/CI VCP type")
+    return {"operation": "vcp-get", "code": f"0x{code:02X}", "type": reply[5],
+            "maximum": int.from_bytes(reply[6:8], "big"),
+            "current": int.from_bytes(reply[8:10], "big"), "reply": reply.hex()}
+
+
+def vcp_set(client, code, value):
+    if type(code) is not int or not 0 <= code <= 255:
+        raise TesterError("VCP code must be 0..255")
+    if type(value) is not int or not 0 <= value <= 65535:
+        raise TesterError("VCP value must be 0..65535")
+    packet = ddc_packet(bytes((0x03, code)) + value.to_bytes(2, "big"))
+    client.ddc_write(packet)
+    # Set VCP has no application-level response. Report only the bus ACK;
+    # use Get VCP (or menu-state after a key) to observe the resulting state.
+    return {"operation": "vcp-set", "code": f"0x{code:02X}", "value": value,
+            "i2c_acknowledged": True, "request": packet.hex()}
+
+
 def capture(output, device):
     require_new(output)
     ffmpeg = shutil.which("ffmpeg")
@@ -564,6 +635,14 @@ def argument_parser():
     sub.add_parser("info", help="Firmware version and current video mode")
     sub.add_parser("scan", help="Scan the HDMI DDC bus")
     sub.add_parser("ddc-config", help="Read fixed DDC registers in ISP; preserve existing ISP")
+    get_vcp = sub.add_parser("vcp-get", help="Get a live DDC/CI value through the HSTX tester")
+    get_vcp.add_argument("code", type=lambda value: int(value, 0), help="Decimal or 0x-prefixed VCP code")
+    set_vcp = sub.add_parser("vcp-set", help="Send a live DDC/CI Set VCP command")
+    set_vcp.add_argument("code", type=lambda value: int(value, 0))
+    set_vcp.add_argument("value", type=lambda value: int(value, 0))
+    key = sub.add_parser("key", help="Send an Adafruit RTD virtual menu key (VCP 0xe0)")
+    key.add_argument("name", choices=VIRTUAL_KEYS)
+    sub.add_parser("menu-state", help="Read Adafruit RTD menu state (VCP 0xe1)")
     edid = sub.add_parser("edid", help="Read base EDID and all advertised extension blocks")
     edid.add_argument("output", type=Path, help="New binary EDID file")
     dump = sub.add_parser("dump", help="Read flash at least twice and save only matching data")
@@ -631,6 +710,20 @@ def main(argv=None):
                         raise TesterError("Invalid I2C scan response")
                 elif args.action == "ddc-config":
                     result = ddc_config(client)
+                elif args.action in ("vcp-get", "vcp-set", "key", "menu-state"):
+                    if hello.get("isp_active") is not False:
+                        raise TesterError("Live DDC/CI requires confirmed ISP inactive; "
+                                          "no ISP exit or reset attempted")
+                    if args.action == "vcp-get":
+                        result = vcp_get(client, args.code)
+                    elif args.action == "vcp-set":
+                        result = vcp_set(client, args.code, args.value)
+                    elif args.action == "key":
+                        result = vcp_set(client, 0xe0, VIRTUAL_KEYS[args.name])
+                        result.update({"operation": "key", "key": args.name})
+                    else:
+                        result = vcp_get(client, 0xe1)
+                        result["operation"] = "menu-state"
                 elif args.action == "edid":
                     blocks = []
                     count = 1

@@ -24,8 +24,9 @@ There are up to 15 visible colors plus transparent index zero. This uses the
 OSD palette and SRAM, not a full-color framebuffer.
 
 The independent `NO_SIGNAL_BMP` build option defaults to `assets/no-signal.bmp`.
-On signal loss, the app switches to the black free-running background and loads
-this bitmap once. It remains visible through input qualification, then hides on
+The default no-signal appearance uses a black free-running background and loads
+this bitmap once. The live menu also offers plain black or blue. It remains
+visible through input qualification, then hides on
 successful video acquisition. No-signal artwork works with the startup splash
 disabled. The two images reuse OSD SRAM rather than being resident together.
 
@@ -33,7 +34,8 @@ disabled. The two images reuse OSD SRAM rather than being resident together.
 black, inset 16 pixels from the top left. Its original 5x7 diagnostic alphabet
 is expanded inside 12x18 glyphs and shown with global 2x zoom; character rows
 remain 1x. The same global zoom preserves the bitmap's calibrated frame origin.
-The input overlay lasts three seconds after acquisition, without pausing input
+The input overlay lasts three seconds after acquisition when Connection Popup
+is enabled, without pausing input
 monitoring. Rejected input keeps its measured geometry, estimated refresh,
 horizontal frequency, totals, polarity and first rejection reason visible.
 Unknown measurements appear as `--`; a digital timeout shows the no-signal card.
@@ -45,16 +47,30 @@ on the UC-586's transition into live HSTX video. Camera captures then showed
 640x480, approximately 60.2 Hz, 31.53 kHz and totals 800x524 at the top left,
 followed by unobstructed video after expiry.
 
-`make MENU_PREVIEW=1` cycles through the main menu and Picture, Audio, Display
+## Live menu and artwork preview
+
+The normal firmware implements Picture, Audio, Display and Menu Settings menus,
+plus a No Signal submenu. Menu selects a row or enters/leaves adjustment; up/down
+move selection or change a value; back leaves adjustment or returns one level.
+The RP2350 tester can send these events over DDC/CI while video runs. Physical
+key decoding remains pending. The [DDC/CI reference](ddcci.md) documents commands,
+setting values and menu-state readback. All six live pages, virtual navigation,
+editing and setting readback passed [bench validation](ddcci.md#transport-and-validation);
+picture, aspect, mute and backlight off/wake also passed the checks recorded there.
+
+Picture's `IMAGE BRIGHTNESS` changes pixel values. Display's `LED BACKLIGHT`
+is disabled and shows a gray `--`: PWM1 requests for 100%, 25% and 0% were
+accepted, but three camera captures showed no visible brightness change.
+Contrast, audio mute, Keep/Fill aspect and the runtime options below are wired
+to the shared settings controller. Volume, rotation and mirror remain disabled.
+The separate P6.4/pin54 backlight power gate passed physical off/wake checks.
+
+`make MENU_PREVIEW=1` separately cycles through the main menu and Picture, Audio, Display
 and Menu Settings after the startup splash. Each has three sample variants,
 held for 1.5 seconds after its upload, before returning to normal acquisition.
 Font upload adds time between pages. All values are artwork samples: the preview
 does not read buttons or change video, audio, backlight or stored settings.
 The normal build leaves the preview disabled.
-
-Picture labels its pixel adjustment `IMAGE BRIGHTNESS`; Display labels its
-panel-light adjustment `LED BACKLIGHT`. These are separate controls, each with
-its own percentage and slider. Both are still preview values pending controls.
 
 The seven-row, 30-column layout is centered at 720x252 panel pixels. It reuses
 the diagnostic alphabet, adding a percent glyph, and uses green titles, blue
@@ -62,8 +78,7 @@ selection rows and green/gray slider tracks. The map ends before the font base.
 The variants exercise 0/50/100 percent tracks, mute on/off, alternative aspect
 labels, timeout values and a highlighted Back row. Rotation and mirror show
 gray `--` placeholders because their board controls are not implemented.
-Display starts with `ASPECT KEEP`, matching the video driver's default;
-the `FILL` sample is artwork only and does not change scaling.
+The preview's `FILL` sample does not change scaling; the live Display menu does.
 Host checks cover every page/variant, slider endpoints, centering, palette and
 return from the larger menu map to the five-row input overlay.
 
@@ -75,7 +90,7 @@ image, and flash protection was restored to `0x0C`.
 
 The [classic RTD2660 Adafruit guide](https://learn.adafruit.com/hdmi-uberguide/rtd2660-hdmi-vga-ntsc-pal-driver-board)
 includes photographed Color, OSD and Function menus. Its Menu/select,
-Auto/back and plus/minus navigation is a reference for the future interaction;
+Auto/back and plus/minus navigation is a reference for the interaction;
 the artwork and rendering code here are independently implemented.
 
 The SRAM port accepts Byte0, Byte1, Byte2 while each glyph's first scan line
@@ -107,30 +122,39 @@ data analysis; the project includes only its own color chart and the attributed
 Adafruit bitmap. The 15-color chart, its transparent gaps, and the low-bit-first
 plane order were checked on the UC-586, followed by return to input video.
 
-## Planned OSD settings
+## Runtime settings
 
-Requested runtime options, not yet implemented:
+Settings are held in RAM for the current session; no settings are written to
+the retained vendor flash tail. Persistence is a separate future NVM task.
 
-- [ ] Startup Adafruit splash: On / Off.
-- [ ] Connection timing pop-ups: On / Off.
-- [ ] No-signal appearance: Black / Blue / Test pattern.
-- [ ] No-signal timeout: 1 / 2 / 5 / 10 / 20 / Never.
+| Setting | Choices | Default |
+| --- | --- | --- |
+| Startup Splash | Off / On, on soft-power resume | Build-time `SPLASH` value |
+| Connection Popup | Off / On | On |
+| Menu Timeout | Never / 5 / 10 / 20 seconds | 10 seconds |
+| No Signal Background | Black / Blue / Test bitmap | Test bitmap |
+| No Signal Sleep After | Never / 1 / 2 / 5 / 10 / 20 seconds | Never |
 
-`Never` disables automatic timeout. Timeout units and the action on expiry
-(blanking the image or turning off the backlight) remain to be specified before
-implementation. These runtime choices are separate from the existing build-time
-splash switch and custom no-signal BMP.
+Cold boot follows the build-time `SPLASH` option. The runtime splash setting
+controls resume after soft power off/on (`D6=4`, then `D6=1`). No-signal timeout
+requests backlight power off, keeps monitoring input and requests power on after
+valid video is acquired. An open menu postpones sleep and requests its backlight
+on. The P6.4 gate visibly switched the backlight off on expiry and restored it
+when valid video returned, while `D6` stayed on. The test selected a two-second
+timeout after signal had already been absent longer than that; it did not
+precisely time the delay from initial loss. `Never` disables automatic sleep.
 
 ## Hardware capability and verification boundary
 
 | Control | Hardware basis | Project status |
 | --- | --- | --- |
 | Full-screen startup | Free-running display background plus a centered bitmap | One-second hold after bitmap upload; input video is enabled afterward |
-| Text menus | Row and character maps, proportional 12x18 tiles, 16-color palette, transparent background | Input-status text with an original diagnostic alphabet; menu navigation still needed |
+| Text menus | Row and character maps, proportional 12x18 tiles, 16-color palette, transparent background | Six live pages, DDC/CI navigation and editing bench verified; physical keys pending |
 | Small graphic splash | 1-, 2- or 4-bit tiles in dedicated OSD SRAM, with shared palette and window effects | Automatic BMP conversion; one-bit or four-bit tiles, 15 visible colors plus transparency, 4x scale |
-| Video brightness | Per-channel RGB additive coefficients, separate from backlight power | Documented, not yet exposed or bench verified |
-| Video contrast | Per-channel RGB multiplicative coefficients | Documented, not yet exposed or bench verified |
-| Backlight level | Six 12-bit PWM channels and multiplexed output pins | UC-586 stock contains PWM1/pin103 adjustment code; physical brightness response unverified |
+| Video brightness | Per-channel RGB additive coefficients, separate from backlight power | Live 0–100 control; setting 75 visibly lifted black to gray, then restored to neutral 50 |
+| Video contrast | Per-channel RGB multiplicative coefficients | Live 0–100 control; setting 25 visibly darkened the picture, then restored to neutral 50 |
+| Backlight level | Six 12-bit PWM channels and multiplexed output pins | Disabled; PWM1 requests at 100/25/0% produced unchanged brightness in three camera captures; VCP `10` unsupported and omitted from capabilities |
+| Backlight power | Stock button toggles P6.4/pin 54 through `0xFFCB` bit 0 | Physical off/on and no-signal sleep/wake verified; level dimming remains unavailable |
 | One or five buttons | GPIO and ADC key-sensing inputs are available | Stock UC-586 main polls pin 53 and toggles pin 54; ADC ladder code is also present but not evidence of connected keys |
 | OSD orientation | Dedicated glyph packing/rotation controls | Documented, not implemented; affects overlay only |
 | Video horizontal mirror / vertical flip / 180-degree rotation | Shipped RTD2660H boards expose these modes; panel scan-direction GPIOs are one known firmware mechanism | Board-dependent; investigate the UC-586 connection before implementing |
@@ -174,8 +198,8 @@ for the shipped SYS modes, not a completed UC-586 measurement.
   Debouncing, long presses and repeat belong between raw sampling and the menu.
 - A single firmware-readable key could cycle controls and use a long press to
   select. The UC-586 stock code provides a specific pin 53 input/pin 54 output
-  path to investigate, detailed below; button presses and visible backlight
-  response still need correlation with that path.
+  path detailed below. Pin54 backlight control is now verified; physical pin53
+  button sampling and interaction still need implementation and testing.
 - Keep video brightness/contrast separate from LED backlight level in both the
   API and menu. The former modifies pixel values; the latter controls light.
 - Keep menu state and settings independent of the OSD renderer. This lets a
@@ -269,9 +293,16 @@ The inspected bank-zero listing does not establish programmed PWM divisor
 values. The manual's reset divisors and its 243 MHz PLL example would imply
 about 59.3 kHz, but that is not a measured stock frequency. An explicit crystal
 clock selection with PWM1 first-stage divider zero and first-stage output
-selected would instead give `27 MHz / 4096 = 6591.797 Hz`. That provides a known
-frequency for a later controlled probe. Under the stock-inferred brightness
-curve, high-duty bytes `0x00`, `0x80`, `0x00` represent 100%, 50%, 100% requests
-when the lower duty nibble is zero. This is an experimental sequence to verify,
-not a currently supported brightness API. Preserve the prior pin mux, clock,
-enable and duty state before testing, and restore it afterward.
+selected would instead give `27 MHz / 4096 = 6591.797 Hz`. The candidate PWM1
+experiment selected that crystal clock and wrote all twelve duty bits:
+100% maps to 0,
+50% to 2048, and 0% to 4095. It preserves other channels' shared fields and
+commits through FF46 bit7. FF48 bit6 is cleared to enable twelve-bit duty.
+VCP requests for 100%, 25% and 0% were accepted, but three camera captures showed
+unchanged brightness. This does not establish PWM1 as the LED dimming input.
+Level adjustment is now disabled and `board_backlight_available()` returns false.
+
+Separate `board_backlight_power()` drives the stock button's P6.4/pin 54 output
+through `0xFFCB` bit 0. Camera checks verified a dark panel on soft power off,
+recovery on power on, and no-signal backlight sleep followed by visible wake
+when valid video returned. No dimming capability is implied by this on/off gate.

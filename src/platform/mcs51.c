@@ -3,6 +3,7 @@
 #include "rtd/board.h"
 #include "rtd/io.h"
 #include "rtd/platform.h"
+#include "rtd/ddcci.h"
 
 __sfr __at(0x8e) RTD_CKCON;
 
@@ -55,7 +56,9 @@ uint32_t platform_millis(void) {
 void platform_delay_ms(uint16_t duration) {
   uint32_t start = platform_millis();
   /* Extra tick covers starting partway through a timer period. */
-  while ((uint32_t)(platform_millis() - start) < (uint32_t)duration + 2) {}
+  while ((uint32_t)(platform_millis() - start) < (uint32_t)duration + 2) {
+    ddcci_service();
+  }
 }
 
 void platform_init(void) {

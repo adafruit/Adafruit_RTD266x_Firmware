@@ -8,6 +8,7 @@
 #include "rtd/board.h"
 #include "rtd/osd.h"
 #include "rtd/panel.h"
+#include "rtd/ddcci.h"
 
 #define OSD_CODE
 #include "splash_bitmap.h"
@@ -20,6 +21,9 @@ static uint8_t written[4096][3], palette[48];
 static uint16_t address;
 static unsigned lane, palette_bytes, palette_index;
 static uint16_t runtime_vstart = 32;
+static uint8_t font_snapshot[59 * 9][3];
+static unsigned font_cached, font_seen;
+static unsigned writes_since_poll, ddcci_polls, upload_polls;
 
 uint16_t video_display_vstart(void) {
   return runtime_vstart;
@@ -40,6 +44,7 @@ void rtd_write(uint8_t page, uint8_t reg, uint8_t value) {
     address = (address & 0xff00) | value;
     lane = 0;
   } else if (reg == 0x92) {
+    assert(++writes_since_poll <= 27); /* Bounded service during uploads. */
     assert((address & 0xc000) == 0xc000); /* All three byte lanes. */
     assert(!(regs[0x93] & 0x08));       /* Lower SRAM bank. */
     word = address & 0x0fff;
@@ -67,6 +72,18 @@ void rtd_update(uint8_t page, uint8_t reg, uint8_t mask, uint8_t value) {
   rtd_write(page, reg, (rtd_read(page, reg) & (uint8_t)~mask) | (value & mask));
 }
 
+void ddcci_service(void) {
+  uint16_t saved_address = address;
+  assert(lane == 0); /* Never yield between lanes of an OSD word. */
+  assert(writes_since_poll == 3 || writes_since_poll == 27);
+  if (writes_since_poll == 27) ++upload_polls;
+  writes_since_poll = 0;
+  ++ddcci_polls;
+  /* Live commands may touch unrelated scaler registers, but must defer OSD. */
+  rtd_update(0, 0x62, 3, rtd_read(0, 0x62) & 3);
+  assert(address == saved_address && lane == 0);
+}
+
 static void check_asset(void (*show)(void), const char *name,
                         unsigned bitmap_width, unsigned bitmap_height,
                         unsigned bpp, unsigned colors,
@@ -79,6 +96,7 @@ static void check_asset(void (*show)(void), const char *name,
   const unsigned pad_y = (height - bitmap_height) / 2;
   unsigned map, fonts, row, column, x, y, differing_pairs = 0;
   unsigned x_delay, y_delay;
+  unsigned polls_before = ddcci_polls, uploads_before = upload_polls;
 
   assert(bpp == 1 || bpp == 4);
   assert(colors <= 16);
@@ -87,6 +105,9 @@ static void check_asset(void (*show)(void), const char *name,
   memset(written, 0, sizeof(written));
   palette_bytes = 0;
   show();
+  assert(!writes_since_poll && ddcci_polls > polls_before);
+  assert(upload_polls - uploads_before == rows * columns * bpp);
+  font_cached = 0; /* Bitmap tiles replace text-font SRAM. */
   assert((regs[0x6c] & 1) && (frame[0][2] & 1));
   assert(frame[3][1] == 3);
   assert(palette_bytes == colors * 3);
@@ -181,6 +202,27 @@ static unsigned glyph_pixel(unsigned glyph, unsigned x, unsigned y) {
   return (pixels >> ((y % 2 ? 11 : 23) - x)) & 1;
 }
 
+static void check_text_writes(unsigned rows) {
+  unsigned word, byte;
+  assert(!writes_since_poll);
+  assert(rows + 1 <= 0x10 && 0x10 + rows * 30 <= 0x100);
+  assert(0x100 + 59 * 9 <= 4096);
+  for (word = 0; word < 4096; ++word) {
+    unsigned used = word <= rows ||
+        (word >= 0x10 && word < 0x10 + rows * 30) ||
+        (!font_cached && word >= 0x100 && word < 0x100 + 59 * 9);
+    for (byte = 0; byte < 3; ++byte) assert(written[word][byte] == used);
+  }
+  /* Both cached glyphs and uploads after bitmap use must exactly match the
+   * original font, whose pixels are independently decoded by check_input. */
+  if (font_seen) assert(!memcmp(font_snapshot, &sram[0x100], sizeof font_snapshot));
+  else {
+    memcpy(font_snapshot, &sram[0x100], sizeof font_snapshot);
+    font_seen = 1;
+  }
+  font_cached = 1;
+}
+
 static void check_input(const video_signal_t *signal,
                         const char *const expected[5], char text[5][31]) {
   unsigned row, column, glyph, x, y, ink, x_delay, y_delay;
@@ -210,13 +252,7 @@ static void check_input(const video_signal_t *signal,
     text[row][30] = '\0';
   }
   assert(sram[5][0] == 0 && sram[5][1] == 0 && sram[5][2] == 0);
-  for (row = 0; row < 4096; ++row) {
-    unsigned used = row <= 5 || (row >= 0x10 && row < 0x10 + 150) ||
-                    (row >= 0x100 && row < 0x100 + 59 * 9);
-    for (column = 0; column < 3; ++column) {
-      assert(written[row][column] == used);
-    }
-  }
+  check_text_writes(5);
   /* Font geometry is independently decoded from SRAM: blank space, one
    * pixel side margins, two line top/bottom margins and doubled 5x7 pixels. */
   for (glyph = 0; glyph < 59; ++glyph) {
@@ -345,8 +381,10 @@ static void check_menu_preview(void) {
   char text[7][31];
   for (page = 0; page < OSD_PREVIEW_COUNT; ++page) {
     for (variant = 0; variant < 3; ++variant) {
+      memset(written, 0, sizeof written);
       palette_bytes = 0;
       osd_show_menu_preview(page, variant);
+      check_text_writes(7);
       assert((regs[0x6c] & 1) && (frame[0][2] & 1));
       assert(palette_bytes == 18 && frame[3][1] == 3);
       assert(palette[9] == 16 && palette[10] == 64 && palette[11] == 160);
@@ -417,6 +455,61 @@ static void check_menu_preview(void) {
   puts("OSD all submenu pages, slider limits, selections and centering passed");
 }
 
+static void check_live_menu(void) {
+  unsigned pass, row, column, x_delay, y_delay;
+  char text[7][31];
+  for (pass = 0; pass < 2; ++pass) {
+    memset(written, 0, sizeof written);
+    palette_bytes = 0;
+    osd_menu_begin("LIVE MENU");
+    osd_menu_row("CONTRAST", NULL, pass ? 5 : 75, 1, !pass, 1);
+    osd_menu_row("ROTATION", NULL, 0, 0, 0, 0);
+    if (!pass) {
+      osd_menu_row("ASPECT", "KEEP", 0, 0, 0, 1);
+      osd_menu_row("MUTE", "OFF", 0, 0, 0, 1);
+      osd_menu_row("BACK", "", 0, 0, 0, 1);
+      osd_menu_row("MUST NOT FIT", "", 0, 0, 0, 1);
+    }
+    osd_menu_end(pass ? "ADJUST +/-" : "MENU SELECT");
+    check_text_writes(7);
+    assert((regs[0x6c] & 1) && (frame[0][2] & 1));
+    assert(palette_bytes == 18 && frame[3][1] == 3);
+    assert(palette[9] == 16 && palette[10] == 64 && palette[11] == 160);
+    for (row = 0; row < 7; ++row) {
+      assert(sram[row][0] == 0x80 && sram[row][1] == 0x88 && sram[row][2] == 30);
+      for (column = 0; column < 30; ++column) {
+        unsigned entry = 0x10 + row * 30 + column;
+        assert(sram[entry][0] == 0x8c && sram[entry][1] < 59);
+        text[row][column] = (char)(sram[entry][1] + 32);
+      }
+      text[row][30] = 0;
+    }
+    assert(sram[7][0] == 0 && sram[7][1] == 0 && sram[7][2] == 0);
+    assert(!strncmp(text[0], " LIVE MENU", 10));
+    assert(!strncmp(text[1], " CONTRAST", 9));
+    assert(!strncmp(text[1] + 22, pass ? "5% " : "75%", 3));
+    assert(sram[0x10 + 30][2] == (pass ? 0x12 : 0x13));
+    assert(sram[0x10 + 30 + 22][2] == (pass ? 0x12 : 0x13));
+    assert(!strncmp(text[2], " ROTATION", 9));
+    assert(!strncmp(text[2] + 22, "--", 2));
+    assert(sram[0x10 + 60 + 22][2] == 0x52);
+    assert(sram[0x10 + 180][2] == 0x52);
+    assert(strstr(text[6], pass ? "ADJUST +/-" : "MENU SELECT"));
+    if (pass) {
+      for (row = 3; row < 6; ++row)
+        for (column = 0; column < 30; ++column) assert(text[row][column] == ' ');
+    } else {
+      assert(!strncmp(text[5], " BACK", 5));
+      assert(!strstr(text[6], "MUST NOT FIT"));
+    }
+    x_delay = ((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6);
+    y_delay = ((unsigned)frame[0][0] << 3) | ((frame[0][2] >> 3) & 7);
+    assert(x_delay * 8 + BOARD_OSD_X_CORRECTION - panel.hstart == 40);
+    assert(y_delay * 2 - runtime_vstart == 114);
+  }
+  puts("OSD live menu selections, disabled rows, stale cells and font cache passed");
+}
+
 int main(void) {
   check_asset(osd_show_splash, "splash", SPLASH_BITMAP_WIDTH,
               SPLASH_BITMAP_HEIGHT, SPLASH_BITMAP_BPP, SPLASH_PALETTE_COLORS,
@@ -426,12 +519,14 @@ int main(void) {
               NO_SIGNAL_PALETTE_COLORS, no_signal_palette, no_signal_bitmap);
   check_menu_preview();
   check_input_messages();
+  check_live_menu();
   regs[0x6c] = 0x20; /* Hardware background transition cleared the port. */
   osd_service();
   assert(regs[0x6c] == 0x21);
   check_asset(osd_show_splash, "splash again", SPLASH_BITMAP_WIDTH,
               SPLASH_BITMAP_HEIGHT, SPLASH_BITMAP_BPP, SPLASH_PALETTE_COLORS,
               splash_palette, splash_bitmap);
+  check_live_menu(); /* Bitmap invalidation forces exactly one new font upload. */
   osd_hide();
   osd_service(); /* An expired overlay must not be resurrected. */
   assert(!(regs[0x6c] & 1) && !(frame[0][2] & 1));

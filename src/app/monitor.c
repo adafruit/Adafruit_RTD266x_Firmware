@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
-#include "rtd/board.h"
 #include "rtd/audio.h"
-#include "rtd/edid.h"
+#include "rtd/board.h"
+#include "rtd/control.h"
+#include "rtd/ddcci.h"
 #include "rtd/diagnostics.h"
+#include "rtd/edid.h"
 #include "rtd/io.h"
 #include "rtd/osd.h"
 #include "rtd/platform.h"
@@ -24,9 +26,9 @@ static video_signal_t shown_signal;
 /* Ignore small measurement jitter while keeping changed rejected settings
  * visible. Compare measured fields, never the possibly stale trace details. */
 static uint8_t input_info_changed(const video_signal_t *signal) {
-  uint32_t difference = signal->line_hz > shown_signal.line_hz ?
-      signal->line_hz - shown_signal.line_hz :
-      shown_signal.line_hz - signal->line_hz;
+  uint32_t difference = signal->line_hz > shown_signal.line_hz
+                            ? signal->line_hz - shown_signal.line_hz
+                            : shown_signal.line_hz - signal->line_hz;
   return signal->error != shown_signal.error ||
          signal->measured != shown_signal.measured ||
          signal->input_width != shown_signal.input_width ||
@@ -45,6 +47,8 @@ void main(void) {
   uint8_t displayed_mode = VIDEO_MODE_NONE, candidate_mode = VIDEO_MODE_NONE;
   uint8_t matching_samples = 0, screen = 0, audio_tick;
   uint32_t info_started = 0;
+  uint32_t missing_started = 0, timeout;
+  uint8_t missing = 0, sleeping = 0, was_powered = 1;
 #if RTD_MENU_PREVIEW
   uint8_t preview_page, preview_variant;
 #endif
@@ -56,6 +60,8 @@ void main(void) {
   video_init();
   board_init();
   audio_init();
+  control_init();
+  ddcci_init();
   video_background(0, 0, 0);
   mcu_write(0xf2, 2);
 #if RTD_SPLASH
@@ -78,56 +84,118 @@ void main(void) {
 #endif
 
   for (;;) {
-    if (!video_measure(&signal)) {
-      audio_stop();
-      video_blank(1);
-      if (signal.error == VIDEO_DIGITAL_TIMEOUT) {
-        if (screen != 1) {
-          osd_show_no_signal();
-          screen = 1;
-        }
-      } else if (screen != 2 || input_info_changed(&signal)) {
-        osd_show_input(&signal);
-        shown_signal = signal;
-        screen = 2;
+    if (control_overlay_changed())
+      screen = 0xff;
+    if (!control_power()) {
+      if (was_powered) {
+        audio_stop();
+        video_blank(1);
+        video_background(0, 0, 0);
+        osd_hide();
       }
+      was_powered = 0;
       displayed_mode = candidate_mode = VIDEO_MODE_NONE;
       matching_samples = 0;
-      mcu_write(0xf2, 3);
-    } else if (signal.mode != displayed_mode) {
-      audio_stop();
-      if (signal.mode != candidate_mode) {
-        candidate_mode = signal.mode;
-        matching_samples = 1;
-      } else if (++matching_samples >= 2) {
-        if (video_apply(&signal)) {
-          osd_show_input(&signal);
-          info_started = platform_millis();
-          screen = 3;
-          displayed_mode = signal.mode;
-          mcu_write(0xf2, 4);
-        }
-        matching_samples = 0;
-      }
     } else {
-      candidate_mode = matching_samples = 0;
-    }
-    if (screen == 3 &&
-        (uint32_t)(platform_millis() - info_started) >= INPUT_INFO_DURATION_MS) {
-      osd_hide();
-      screen = 0;
+      if (!was_powered) {
+        was_powered = 1;
+        if (control_setting(SET_SPLASH)) {
+          osd_show_splash();
+          platform_delay_ms(SPLASH_DURATION_MS);
+          osd_hide();
+        }
+        screen = 0xff;
+      }
+      if (!video_measure(&signal)) {
+        audio_stop();
+        video_blank(1);
+        if (!missing) {
+          missing_started = platform_millis();
+          missing = 1;
+        }
+        timeout = control_signal_timeout_ms();
+        if (timeout &&
+            (uint32_t)(platform_millis() - missing_started) >= timeout &&
+            !control_menu_open()) {
+          if (!sleeping) {
+            board_backlight_power(0);
+            sleeping = 1;
+          }
+        } else if (sleeping) {
+          board_backlight_power(1);
+          board_backlight_set(control_setting(SET_BACKLIGHT));
+          sleeping = 0;
+        }
+        if (signal.error == VIDEO_DIGITAL_TIMEOUT) {
+          if (screen != 1 && !control_menu_open()) {
+            osd_hide();
+            video_background(0, 0,
+                             control_setting(SET_NO_SIGNAL) == 1 ? 255 : 0);
+            if (control_setting(SET_NO_SIGNAL) == 2)
+              osd_show_no_signal();
+            screen = 1;
+          }
+        } else if (!control_menu_open() &&
+                   (screen != 2 || input_info_changed(&signal))) {
+          osd_show_input(&signal);
+          shown_signal = signal;
+          screen = 2;
+        }
+        displayed_mode = candidate_mode = VIDEO_MODE_NONE;
+        matching_samples = 0;
+        mcu_write(0xf2, 3);
+      } else if (signal.mode != displayed_mode) {
+        audio_stop();
+        if (signal.mode != candidate_mode) {
+          candidate_mode = signal.mode;
+          matching_samples = 1;
+        } else if (++matching_samples >= 2) {
+          if (video_apply(&signal)) {
+            missing = sleeping = 0;
+            board_backlight_power(1);
+            board_backlight_set(control_setting(SET_BACKLIGHT));
+            if (!control_menu_open()) {
+              if (control_setting(SET_POPUP))
+                osd_show_input(&signal);
+              else
+                osd_hide();
+            }
+            info_started = platform_millis();
+            screen = control_setting(SET_POPUP) ? 3 : 0;
+            displayed_mode = signal.mode;
+            mcu_write(0xf2, 4);
+          }
+          matching_samples = 0;
+        }
+      } else {
+        candidate_mode = matching_samples = 0;
+        if (screen == 0xff && !control_menu_open()) {
+          osd_hide();
+          screen = 0;
+        }
+      }
+      if (screen == 3 && !control_menu_open() &&
+          (uint32_t)(platform_millis() - info_started) >=
+              INPUT_INFO_DURATION_MS) {
+        osd_hide();
+        screen = 0;
+      }
     }
 #if RTD_TRACE
     diagnostics_measurement(signal.error, signal.detail[0], signal.detail[1],
-                             signal.detail[2]);
+                            signal.detail[2]);
 #endif
     /* Keep video qualification at its existing cadence while allowing the
      * audio PLL and mute watchdogs to progress without blocking video setup.
      */
     for (audio_tick = 0; audio_tick < 25; ++audio_tick) {
-      if (displayed_mode != VIDEO_MODE_NONE) video_service();
+      ddcci_service();
+      control_service(platform_millis());
+      if (displayed_mode != VIDEO_MODE_NONE)
+        video_service();
       osd_service();
-      audio_service(platform_millis(), displayed_mode != VIDEO_MODE_NONE);
+      audio_service(platform_millis(),
+                    control_power() && displayed_mode != VIDEO_MODE_NONE);
       platform_delay_ms(10);
     }
   }

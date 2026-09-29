@@ -15,6 +15,11 @@ enum {
 void audio_init(void);
 void audio_stop(void);
 void audio_service(uint32_t now, uint8_t video_valid);
+/* User mute survives signal loss. Unmute waits for the existing audio guards. */
+void audio_set_mute(uint8_t muted);
+uint8_t audio_get_mute(void);
+/* Digital gain encoding is unverified; this board currently offers mute only. */
+uint8_t audio_volume_available(void);
 uint8_t audio_state(void);
 uint32_t audio_sample_rate(void);
 #endif

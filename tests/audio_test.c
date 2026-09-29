@@ -222,12 +222,83 @@ static void test_fifo_settling(void) {
   muted();
 }
 
+static void test_user_mute(void) {
+  fixture();
+  assert(!audio_get_mute() && !audio_volume_available());
+  acquire(0);
+  audio_set_mute(1);
+  assert(audio_get_mute() && !audio[0x62]);
+  assert(audio_state() == AUDIO_PLAYING && (audio[0x30] & 0x20));
+  service(1005, 1);
+  assert(!audio[0x62] && output_enables == 1);
+  audio_set_mute(0);
+  assert(!audio[0x62]); /* Setter cannot bypass signal/watchdog checks. */
+  service(1006, 1);
+  assert(audio[0x62] == 15 && output_enables == 2);
+
+  fixture();
+  audio_set_mute(255); /* Any nonzero value means mute. */
+  start(0);
+  service(504, 1);
+  service(1004, 1);
+  assert(audio_state() == AUDIO_PLAYING && audio_get_mute());
+  muted(); /* Acquisition itself must respect an existing user mute. */
+  direct[0xcb] |= 2;
+  service(1005, 1);
+  assert(audio_state() == AUDIO_RETRY && audio_get_mute());
+  direct[0xcb] = 1;
+  start(1255);
+  service(1759, 1);
+  service(2259, 1);
+  assert(audio_state() == AUDIO_PLAYING && audio_get_mute());
+  muted(); /* Mute also survives fault recovery. */
+  audio_set_mute(0);
+  service(2260, 1);
+  assert(audio[0x62] == 15 && output_enables == 1);
+}
+
+static void test_guarded_user_unmute(void) {
+  static const uint8_t faults[] = {0, 0x11, 0x41, 3, 5};
+  unsigned i;
+  for (i = 0; i < sizeof faults; ++i) {
+    fixture();
+    acquire(0);
+    audio_set_mute(1);
+    direct[0xcb] = faults[i];
+    audio_set_mute(0);
+    assert(!audio[0x62]);
+    service(1005, 1);
+    assert(!audio[0x62] && output_enables == 1);
+  }
+  fixture();
+  acquire(0);
+  audio_set_mute(1);
+  audio[0x30] &= (uint8_t)~0x20;
+  audio_set_mute(0);
+  service(1005, 1);
+  assert(audio_state() == AUDIO_RETRY && !audio[0x62]);
+  assert(output_enables == 1);
+
+  fixture();
+  acquire(0);
+  audio_set_mute(1);
+  service(1104, 1);
+  assert(audio_state() == AUDIO_RATE_CHECK);
+  acr(12288, 25200, 1097); /* Unsupported 96 kHz during a pending check. */
+  audio_set_mute(0);
+  service(1106, 1);
+  assert(audio_state() == AUDIO_RETRY && !audio[0x62]);
+  assert(output_enables == 1);
+}
+
 int main(void) {
   test_acquisition();
   test_rates();
   test_pll_deadline();
   test_faults();
   test_fifo_settling();
+  test_user_mute();
+  test_guarded_user_unmute();
   puts("Audio: rate validation, guarded unmute, faults, deadlines and rollover pass");
   return 0;
 }

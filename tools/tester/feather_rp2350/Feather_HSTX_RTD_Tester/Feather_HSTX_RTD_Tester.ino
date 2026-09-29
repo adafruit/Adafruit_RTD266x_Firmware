@@ -16,6 +16,8 @@
 const uint32_t MODE_COOKIE = 0x48535458;
 const uint16_t SERIAL_LINE_BYTES = 1024;
 const int16_t TONE_AMPLITUDE = 1000; // Leaves headroom at a USB mic input.
+const uint8_t DDC_CI_ADDRESS = 0x37; // VESA DDC/CI seven-bit slave address.
+const uint8_t DDC_CI_MAX_BYTES = 32;
 Adafruit_DVI_Audio_GFX16 *display = nullptr;
 alignas(Adafruit_DVI_Audio_GFX16)
     uint8_t displayStorage[sizeof(Adafruit_DVI_Audio_GFX16)];
@@ -212,6 +214,62 @@ bool readEdid(uint8_t block, uint8_t *data) {
   return ok;
 }
 
+void ddcTransfer(const char *packet, const char *replyLength) {
+  uint8_t data[256]; // hexBytes() also serves the 256-byte flash page command.
+  size_t bytes = 0;
+  uint32_t length = 0;
+  if (!packet || !number(replyLength, length) || length > DDC_CI_MAX_BYTES) {
+    printError("DDC requires a hex packet and 0, or - and a read length 1..32");
+    return;
+  }
+  bool reading = !strcmp(packet, "-");
+  if ((reading && !length) ||
+      (!reading && (length || !hexBytes(packet, data, bytes) ||
+                    bytes > DDC_CI_MAX_BYTES))) {
+    printError("DDC uses separate writes and reads, each at most 32 bytes");
+    return;
+  }
+  if (flash.active()) {
+    printError("Live DDC requires the RTD firmware running, outside ISP");
+    return;
+  }
+  // Keep the 50 ms DDC/CI processing delay on the host. Each command performs
+  // one short bus transaction, then audio feeding resumes in loop().
+  if (display) {
+    feedAudio();
+  }
+  Wire.setTimeout(10);
+  bool ok;
+  if (reading) {
+    bytes = Wire.requestFrom(DDC_CI_ADDRESS, (uint8_t)length);
+    ok = bytes == length;
+    for (size_t i = 0; i < bytes; ++i) {
+      data[i] = Wire.read();
+    }
+  } else {
+    Wire.beginTransmission(DDC_CI_ADDRESS);
+    ok = Wire.write(data, bytes) == bytes;
+    if (ok) {
+      ok = Wire.endTransmission() == 0;
+    }
+  }
+  Wire.setTimeout(100); // Restore the existing timeout for EDID and ISP.
+  if (display) {
+    feedAudio();
+  }
+  if (!ok) {
+    printError("DDC transaction failed or returned a short read; not retried");
+  } else if (reading) {
+    Serial.print("{\"ok\":true,\"data\":\"");
+    printHex(data, bytes);
+    Serial.println("\"}");
+  } else {
+    Serial.print("{\"ok\":true,\"written\":");
+    Serial.print(bytes);
+    Serial.println("}");
+  }
+}
+
 void processCommand(char *line) {
   char *cmd = strtok(line, " ");
   char *arg1 = strtok(nullptr, " ");
@@ -281,6 +339,8 @@ void processCommand(char *line) {
       printHex(data, 128);
       Serial.println("\"}");
     }
+  } else if (!strcmp(cmd, "ddc")) {
+    ddcTransfer(arg1, arg2);
   } else if (!strcmp(cmd, "ddc-config")) {
     RTD266xISP::DDCConfig config;
     if (arg1 || arg2) {

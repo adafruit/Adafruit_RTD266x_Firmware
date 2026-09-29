@@ -74,10 +74,10 @@ operation. See [diagnostic decoding](docs/video-registers.md#bench-diagnostics).
 | `panels/` | Physical pixel and line timings |
 | `src/platform/` | 8051 startup, timer, scaler gateway and EDID SRAM access |
 | `src/rtd/` | Video and audio acquisition, clocks, scaling, EDID and OSD |
-| `src/app/` | Firmware policy: acquire inputs, handle loss and show a splash |
+| `src/app/` | Input policy, live menus, shared settings and soft power |
 | `include/rtd/` | Small interfaces between those layers |
 | `assets/` | Editable startup and no-signal BMPs, with artwork attribution |
-| `tools/` | Build-time BMP palette conversion |
+| `tools/` | Build-time BMP conversion and Feather tester/programmer |
 | `tests/` | Host checks for timing arithmetic, register encoding and rejection paths |
 
 The video driver names the scaler page on every register access. The interrupt
@@ -89,32 +89,47 @@ Only the supplied UC-586/800x480 combination is implemented. Video acceptance
 supports native 800x480 at 1000x525 timing, PicoDVI's alternate 800x480 at
 992x500 timing, and centered 640x480 at 800x525 timing. Keep aspect is the
 default: 640x480 stays at 1:1 with 80-pixel black sidebars; 800x480 fills the
-panel. The Display menu preview shows `ASPECT KEEP`, but does not yet switch
-between keep and fill. All supported inputs are
+panel. The live Display menu can select `KEEP` or `FILL`; fill expands 640x480
+across the panel. All supported inputs are
 near 60 Hz. These are explicit timing profiles, not arbitrary mode detection;
 see the [timing contract](docs/video-registers.md#supported-timing-contract).
 
 ## Display controls
 
-The OSD renderer is separate from video and application policy. Future menus
-can share logical key events across a single-button board and a five-button
-GPIO/ADC board. Board profiles must establish the actual wiring before enabling
-backlight or image-orientation controls.
+The live menu has Picture, Audio, Display and Menu Settings pages, including a
+No Signal submenu. The RP2350 tester sends menu/select, back, up, down and power
+events over DDC/CI while video runs. Physical button decoding remains pending.
+See the [control map and host commands](docs/ddcci.md).
 
-Brightness/contrast adjust the video pixels; backlight control adjusts the
-panel light. Shipped RTD2660H boards demonstrate whole-screen 180-degree
+Image brightness and contrast adjust video pixels. LED backlight adjustment
+is disabled: PWM1 requests at 100%, 25% and 0% produced no visible brightness
+change in three camera captures. The live menu also controls mute, aspect,
+connection popups, menu timeout and no-signal appearance/sleep. Settings last
+for the current session only. Startup Splash affects soft-power resume; cold
+boot still follows the build-time `SPLASH` option. No-signal sleep requests
+backlight power off and on when valid input returns. Its separate stock-derived
+P6.4 gate passed physical backlight-off and wake checks on the UC-586.
+
+Shipped RTD2660H boards demonstrate whole-screen 180-degree
 rotation and mirroring, but the mechanism and available modes are board
 dependent. See the [capability and firmware-analysis notes](docs/ui-capabilities.md).
 The first audio profile implements stereo 48 kHz LPCM through the UC-586's
 CS4334 DAC. See [audio support and validation](docs/audio.md) for its current
-bench status and limits. A complete menu, settings persistence, audio volume
-controls and arbitrary video modes are not implemented.
+bench status and limits. LED backlight, volume, mirror and rotation are disabled
+in the menu; LED backlight shows a gray `--`.
+Settings persistence needs a separate nonvolatile-storage design; arbitrary
+video modes are not implemented. All six live pages, navigation, editing and
+setting readback passed the [DDC/CI bench checks](docs/ddcci.md#transport-and-validation),
+including uninterrupted audio during menu drawing. Camera and audio checks also
+confirmed picture adjustments, Keep/Fill aspect, mute, soft power and no-signal
+backlight sleep/wake. Adjustable backlight dimming remains unavailable.
 
 Build with `make MENU_PREVIEW=1` to cycle through the main menu and all four
 submenus after the splash. Each page shows three sample selections/values,
 including empty, half-full and full sliders. This opt-in artwork preview has
-no button actions and changes no settings; normal builds proceed directly from
-the splash to video acquisition.
+no button actions and changes no settings. It is a renderer exercise separate
+from the live menu; normal builds proceed directly to video acquisition and
+open the live menu only when requested.
 
 ## Programming
 
@@ -151,8 +166,9 @@ python host.py reset-chip
 The backup must match the image currently installed, which is the original
 only on the first run. The programmer compares the complete current image,
 writes changed sectors, verifies all bytes and restores flash protection.
-The final command requests a whole-chip reset; an ISP-only MCU restart can
-retain peripheral state.
+The final `reset-chip` command is required after programming: an ISP-only MCU
+restart retained DDC peripheral state on the bench, and a whole-chip reset
+restored the live interface. Run it before returning the tester to video mode.
 Keep unexpected readbacks before making further changes. The retained flash
 tail is not linked into the new program and is not a settings-storage area.
 

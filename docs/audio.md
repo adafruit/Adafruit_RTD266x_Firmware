@@ -59,6 +59,15 @@ or a changed sample rate stops output and requires reacquisition. N/CTS can rema
 stale after disconnect, so rate arithmetic alone never enables the output.
 Only I2S is enabled; SPDIF remains disabled.
 
+The live Audio menu and DDC/CI VCP `0x8D` share a session mute setting:
+`1` mutes and `2` unmutes, following the
+[MCCS values documented by ddcutil](https://www.ddcutil.com/vcpinfo_output/).
+Unmute permits output only when the existing link, format and clock checks pass;
+it does not override fault muting. Soft power off (`0xD6=4`) also stops audio.
+Volume remains unavailable and appears disabled in the menu. These controls do
+not write persistent settings. Live menu and DDC transactions are validated in
+the [DDC/CI reference](ddcci.md); physical mute/unmute measurements are below.
+
 ## Validation
 
 Host tests cover arithmetic limits, rate rejection, delayed unmute, PLL timeout,
@@ -82,6 +91,15 @@ performance. Both transmitted channels were identical, and the USB capture
 channels were effectively duplicates; stereo separation and channel mapping
 remain untested. Other sample rates, compressed audio and injected AVMute/FIFO
 faults have host-model coverage or deliberate rejection, not bench validation.
+
+A later 30-second capture during live menu navigation retained the 1 kHz tone
+at -15.394 dBFS RMS. Consecutive 50 ms windows ranged from -15.405 to -15.385 dBFS,
+with no measured dropouts. This checks audio continuity while menus draw and
+DDC commands run. A separate virtual-key mute check returned `8D=1` and reduced
+capture RMS to -51.54891 dBFS; unmute returned `8D=2` and restored -15.39195 dBFS.
+The approximately 36 dB reduction confirms the mute control's effect in this
+recording path, not zero silence. The image and live-control checks are recorded in the
+[DDC/CI validation](ddcci.md#transport-and-validation).
 
 The RP2350 also programmed the display over HDMI DDC without a cable swap.
 Full 512 KiB readback matched and flash protection returned to 0x0C. The new

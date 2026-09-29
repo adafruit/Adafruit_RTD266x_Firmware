@@ -3,6 +3,7 @@
 #include "rtd/board.h"
 #include "rtd/osd.h"
 #include "rtd/panel.h"
+#include "rtd/ddcci.h"
 
 #ifdef __SDCC_mcs51
 #define OSD_CODE __code
@@ -36,7 +37,7 @@ CHECK_BITMAP(SPLASH, splash);
 CHECK_BITMAP(NO_SIGNAL, no_signal);
 
 static uint16_t active_width, active_height;
-static uint8_t visible;
+static uint8_t visible, text_loaded;
 
 static void select_word(uint16_t address) {
   /* This small layout stays below the extended SRAM bank at 12 KiB. */
@@ -50,6 +51,8 @@ static void write_word(uint16_t address, uint8_t a, uint8_t b, uint8_t c) {
   rtd_write(0, 0x92, a);
   rtd_write(0, 0x92, b);
   rtd_write(0, 0x92, c);
+  /* DDC callbacks defer OSD work; a completed word is safe to yield. */
+  ddcci_service();
 }
 
 static void set_frame(uint8_t enabled) {
@@ -86,8 +89,9 @@ static void load_bitmap(uint8_t missing_input) {
   const OSD_CODE uint8_t *tiles, *colors;
   uint16_t tile_bytes;
   uint8_t columns, rows, map_mode, map_background, palette_count;
-  uint8_t tile, row, color, channel;
+  uint8_t tile, row, color, channel, uploaded = 0;
   uint16_t byte;
+  text_loaded = 0;
 
   if (missing_input) {
     columns = (NO_SIGNAL_BITMAP_WIDTH + 11u) / 12u;
@@ -143,6 +147,10 @@ static void load_bitmap(uint8_t missing_input) {
    */
   for (byte = 0; byte < tile_bytes; ++byte) {
     rtd_write(0, 0x92, tiles[byte]);
+    if (++uploaded == 27) {
+      uploaded = 0;
+      ddcci_service(); /* Nine complete three-byte words per font plane. */
+    }
   }
 
   /* Palette zero is the transparent background in both tile modes. */
@@ -321,15 +329,19 @@ static void text_begin(uint8_t rows) {
     write_word(OSD_SRAM | row, 0x80, 17u << 3, TEXT_COLUMNS);
   }
   write_word(OSD_SRAM | rows, 0, 0, 0);
-  select_word(OSD_ALL_BYTES | OSD_SRAM | OSD_FONT_BASE);
-  for (character = ' '; character <= 'Z'; ++character) {
-    for (y = 0; y < 18; y += 2) {
-      top = text_scanline(character, y);
-      bottom = text_scanline(character, y + 1);
-      rtd_write(0, 0x92, (uint8_t)bottom);
-      rtd_write(0, 0x92, (uint8_t)((top << 4) | (bottom >> 8)));
-      rtd_write(0, 0x92, (uint8_t)(top >> 4));
+  if (!text_loaded) {
+    select_word(OSD_ALL_BYTES | OSD_SRAM | OSD_FONT_BASE);
+    for (character = ' '; character <= 'Z'; ++character) {
+      for (y = 0; y < 18; y += 2) {
+        top = text_scanline(character, y);
+        bottom = text_scanline(character, y + 1);
+        rtd_write(0, 0x92, (uint8_t)bottom);
+        rtd_write(0, 0x92, (uint8_t)((top << 4) | (bottom >> 8)));
+        rtd_write(0, 0x92, (uint8_t)(top >> 4));
+      }
+      ddcci_service(); /* The complete 27-byte glyph is now in SRAM. */
     }
+    text_loaded = 1;
   }
   /* Index zero remains transparent; index two is opaque black. */
   rtd_write(0, 0x6e, 0x80);
@@ -518,6 +530,37 @@ void osd_show_menu_preview(uint8_t page, uint8_t variant) {
   } else {
     preview_choice("BACK", "", variant == 2, 0);
   }
+  active_width = TEXT_COLUMNS * 24u;
+  active_height = MENU_ROWS * 36u;
+  show_bitmap();
+}
+
+void osd_menu_begin(const char *title) {
+  text_begin(MENU_ROWS);
+  rtd_write(0, 0x6e, 0x89);
+  rtd_write(0, 0x6f, 16); rtd_write(0, 0x6f, 64); rtd_write(0, 0x6f, 160);
+  rtd_write(0, 0x6f, 0); rtd_write(0, 0x6f, 220); rtd_write(0, 0x6f, 120);
+  rtd_write(0, 0x6f, 96); rtd_write(0, 0x6f, 96); rtd_write(0, 0x6f, 96);
+  rtd_write(0, 0x6e, 0);
+  text_color = 0x42;
+  text_put(' '); text_literal(title); text_next_row();
+}
+
+void osd_menu_row(const char *label, const char *choice, uint8_t value,
+                  uint8_t percent, uint8_t selected, uint8_t available) {
+  if (text_row >= MENU_ROWS - 1) return;
+  preview_label(label, selected);
+  if (!available) { text_color = 0x52; text_literal("--"); }
+  else if (choice) text_literal(choice);
+  else { text_number(value); if (percent) text_put('%'); }
+  text_next_row();
+}
+
+void osd_menu_end(const char *footer) {
+  text_color = 0x12;
+  while (text_row < MENU_ROWS - 1) text_next_row();
+  text_color = 0x52;
+  text_put(' '); text_literal(footer); text_next_row();
   active_width = TEXT_COLUMNS * 24u;
   active_height = MENU_ROWS * 36u;
   show_bitmap();

@@ -56,6 +56,10 @@ typedef struct {
 void video_init(void);
 /* Service HDMI AVMute while an accepted video mode is active. */
 void video_service(void);
+/* Percent controls clamp at 100; 50 gives neutral brightness and contrast. */
+void video_set_picture(uint8_t brightness, uint8_t contrast);
+/* Zero keeps the source aspect; nonzero fills the panel horizontally. */
+void video_set_aspect(uint8_t fill);
 /* Returns zero for absent, timed-out, or unsupported input. */
 uint8_t video_measure(video_signal_t *signal);
 uint8_t video_apply(const video_signal_t *signal);

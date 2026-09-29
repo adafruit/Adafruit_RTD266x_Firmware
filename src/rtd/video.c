@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "rtd/video.h"
+#include "rtd/ddcci.h"
 
 #include "rtd/board.h"
 #include "rtd/io.h"
@@ -35,6 +36,9 @@ enum {
   MEASURE_V = 0x54,
   MEASURE_ACTIVE = 0x56,
   MEASURE_SELECT = 0x58,
+  COLOR_CONTROL = 0x62,
+  PICTURE_ACCESS = 0x64,
+  PICTURE_DATA = 0x65,
   GAMMA = 0x67,
   DITHER = 0x6a,
   OVERLAY = 0x6c,
@@ -91,6 +95,8 @@ static const VIDEO_CODE input_mode_t input_modes[] = {
   {800, 992, 500, 166, 17, 10, 29500, 30000, 2, 9, 40}
 };
 static uint16_t display_vstart;
+static uint16_t picture_width;
+static uint8_t aspect_fill;
 
 uint16_t video_display_vstart(void) {
   return display_vstart;
@@ -112,6 +118,26 @@ void video_service(void) {
                      (control & (uint8_t)~0x08) | enable);
   if (watchdog & 0x80)
     rtd_indirect_write(2, HDMI_PORT, HDMI_WATCHDOG, watchdog);
+}
+
+void video_set_picture(uint8_t brightness, uint8_t contrast) {
+  uint8_t channel;
+  uint8_t access = rtd_read(0, PICTURE_ACCESS);
+  if (brightness > 100) brightness = 100;
+  if (contrast > 100) contrast = 100;
+  brightness = (uint8_t)(((uint16_t)brightness * 255u + 50u) / 100u);
+  contrast = (uint8_t)(((uint16_t)contrast * 255u + 50u) / 100u);
+  /* Manual pp60-62: Set A applies to the full picture without a highlight
+   * window. Each control has three RGB coefficients, with 128 neutral.
+   */
+  rtd_update(0, COLOR_CONTROL, 3, 0);
+  rtd_write(0, PICTURE_ACCESS, (access & 0x70) | 0x80);
+  for (channel = 0; channel < 3; ++channel)
+    rtd_write(0, PICTURE_DATA, brightness);
+  for (channel = 0; channel < 3; ++channel)
+    rtd_write(0, PICTURE_DATA, contrast);
+  rtd_write(0, PICTURE_ACCESS, access & 0x7f);
+  rtd_update(0, COLOR_CONTROL, 3, 3);
 }
 
 static void timing_word(uint8_t index, uint16_t value) {
@@ -239,6 +265,8 @@ static void linear_filter(void) {
 }
 
 void video_init(void) {
+  picture_width = 0;
+  aspect_fill = 0;
   rtd_update(0, HOST, 0x01, 0x01);
   platform_delay_ms(20);
   rtd_update(0, HOST, 0x07, 0);
@@ -247,6 +275,7 @@ void video_init(void) {
   panel_timing(panel.vtotal, panel.vstart);
   rtd_write(0, GAMMA, 0);
   rtd_write(0, DITHER, 0);
+  video_set_picture(50, 50);
   linear_filter();
   receiver_init();
 }
@@ -255,6 +284,7 @@ static uint8_t measurement_step(uint8_t bit, uint8_t timeout_ms) {
   uint32_t began = platform_millis();
   rtd_update(0, MEASURE_H, bit, bit);
   while (rtd_read(0, MEASURE_H) & bit) {
+    ddcci_service();
     if ((uint32_t)(platform_millis() - began) >= timeout_ms) {
       rtd_update(0, MEASURE_H, bit, 0);
       return 0;
@@ -401,8 +431,28 @@ static void scale_factor(uint32_t factor) {
   rtd_write(0, SCALE_PORT + 1, (uint8_t)factor);
 }
 
+static void apply_aspect(void) {
+  uint16_t width = aspect_fill ? panel.width : picture_width;
+  uint16_t left = panel.hstart - 10 + (panel.width - width) / 2;
+  uint8_t scale = width != picture_width;
+  /* Only the picture window changes; full-panel DE/background and both
+   * clock domains continue running. All admitted sources are 480 lines.
+   */
+  timing_word(0x05, left);
+  timing_word(0x07, left + width);
+  rtd_write(0, SCALE_PORT, 0x80);
+  scale_factor(scale ? 0xccccdUL : 0xfffffUL); /* VGA 640 -> 800, or unity. */
+  scale_factor(0xfffffUL);
+  rtd_write(0, SCALE_PORT, 0);
+  rtd_update(0, SCALE, 0x13, 0x10 | scale);
+}
+
+void video_set_aspect(uint8_t fill) {
+  aspect_fill = fill != 0;
+  if (picture_width) apply_aspect();
+}
+
 uint8_t video_apply(const video_signal_t *signal) {
-  uint16_t left;
   const VIDEO_CODE input_mode_t *mode;
 
   if (!signal || signal->mode < VIDEO_MODE_VGA || signal->mode > VIDEO_MODE_CVT)
@@ -416,13 +466,6 @@ uint8_t video_apply(const video_signal_t *signal) {
   if (!output_clock(signal->output_clock_hz))
     return 0;
   panel_timing(mode->vtotal, mode->display_y);
-  /* Keep aspect: all admitted sources are 480 lines, so both axes stay 1:1.
-   * Narrow the picture window only; the background/DE remains full panel.
-   * VGA therefore has 80 black pixels on each side (manual p33).
-   */
-  left = panel.hstart - 10 + (panel.width - signal->width) / 2;
-  timing_word(0x05, left);
-  timing_word(0x07, left + signal->width);
   video_background(0, 0, 0);
 
   rtd_update(0, INPUT, 0x02, 0); /* Sync-relative capture, not DE window. */
@@ -441,11 +484,8 @@ uint8_t video_apply(const video_signal_t *signal) {
   rtd_indirect_write(0, FIFO_PORT, 1, (uint8_t)signal->width);
   rtd_indirect_write(0, FIFO_PORT, 2, (uint8_t)signal->height);
 
-  rtd_write(0, SCALE_PORT, 0x80);
-  scale_factor(0xfffffUL);
-  scale_factor(0xfffffUL);
-  rtd_write(0, SCALE_PORT, 0);
-  rtd_update(0, SCALE, 0x13, 0x10); /* Full line buffer, both axes bypassed. */
+  picture_width = signal->width;
+  apply_aspect();
   rtd_update(0, FRAME_CONTROL, 0x02, 0);
   /* Empirical register codes from aligned grid tests, not a general timing
    * solver. The manual's CR41 formula and earlier clock labels disagree.
@@ -459,6 +499,7 @@ uint8_t video_apply(const video_signal_t *signal) {
 }
 
 void video_blank(uint8_t blank) {
+  if (blank) picture_width = 0;
   /* CR28[3]=0 free-runs the panel; bit5 selects its full-screen background.
    * Once capture is configured, select frame sync and incoming video together.
    */

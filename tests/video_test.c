@@ -7,6 +7,7 @@
 #include "rtd/io.h"
 #include "rtd/panel.h"
 #include "rtd/video.h"
+void ddcci_service(void) {}
 
 /* Host model covers register encoding and mode rejection. It cannot model
  * analog PLL lock, the filter's physical tap mapping, or panel image quality.
@@ -23,13 +24,22 @@ static unsigned indirect_writes;
 static uint8_t checking_avmute;
 static uint8_t background[3];
 static unsigned background_bytes;
+static uint8_t picture_coefficients[16];
+static unsigned other_page_writes;
 
 uint8_t rtd_read(uint8_t page, uint8_t reg) {
   return registers[page][reg];
 }
 
 void rtd_write(uint8_t page, uint8_t reg, uint8_t value) {
+  if (page != 0) ++other_page_writes;
   registers[page][reg] = value;
+  if (page == 0 && reg == 0x65) {
+    uint8_t index = registers[0][0x64] & 15;
+    assert(registers[0][0x64] & 0x80);
+    picture_coefficients[index] = value;
+    registers[0][0x64] = (registers[0][0x64] & 0xf0) | ((index + 1) & 15);
+  }
   if (page == 0 && reg == 0x6c && (value & 0x20)) background_bytes = 0;
   if (page == 0 && reg == 0x6d) {
     assert((registers[0][0x6c] & 0x20) && background_bytes < 3);
@@ -57,6 +67,7 @@ uint8_t rtd_indirect_read(uint8_t page, uint8_t reg, uint8_t index) {
 }
 
 void rtd_indirect_write(uint8_t page, uint8_t reg, uint8_t index, uint8_t value) {
+  if (page != 0) ++other_page_writes;
   if (checking_avmute && page == 2 && reg == 0xc9 && index == 0x30)
     assert(!(ports[2][0xc9][0x31] & 0x80));
   ++indirect_writes;
@@ -392,6 +403,64 @@ static void avmute_recovery(void) {
   checking_avmute = 0;
 }
 
+static void picture_controls(void) {
+  static const uint8_t percent[] = {0, 25, 50, 75, 100, 255};
+  static const uint8_t coefficient[] = {0, 64, 128, 191, 255, 255};
+  unsigned i, channel;
+  unsigned before = other_page_writes;
+  registers[0][0x62] = 0x54;
+  registers[0][0x64] = 0x4b;
+  memset(picture_coefficients + 6, 0x37, 10);
+  for (i = 0; i < sizeof percent; ++i) {
+    video_set_picture(percent[i], percent[5 - i]);
+    for (channel = 0; channel < 3; ++channel) {
+      assert(picture_coefficients[channel] == coefficient[i]);
+      assert(picture_coefficients[channel + 3] == coefficient[5 - i]);
+    }
+    for (channel = 6; channel < 16; ++channel)
+      assert(picture_coefficients[channel] == 0x37);
+    assert(registers[0][0x62] == 0x57);
+    assert(registers[0][0x64] == 0x4b);
+  }
+  assert(other_page_writes == before); /* No receiver/audio/PLL changes. */
+  video_set_picture(50, 50);
+}
+
+static void aspect_controls(void) {
+  video_signal_t signal;
+  unsigned before;
+  uint8_t display;
+  fixture(640, 13714);
+  assert(video_measure(&signal) && video_apply(&signal));
+  assert_picture(640);
+  display = registers[0][0x28];
+  before = other_page_writes;
+  video_set_aspect(1);
+  assert(timing(5) == timing(3) && timing(7) == timing(9));
+  assert(timing(7) - timing(5) == 800);
+  assert(factor(0) == 0xccccd && factor(1) == 0xfffff);
+  assert((registers[0][0x32] & 0x13) == 0x11);
+  assert(registers[0][0x28] == display && other_page_writes == before);
+  video_set_aspect(0);
+  assert_picture(640);
+  assert(registers[0][0x28] == display && other_page_writes == before);
+
+  video_set_aspect(255); /* Clamp any nonzero argument to fill. */
+  fixture(800, 13714);
+  assert(video_measure(&signal) && video_apply(&signal));
+  assert_picture(800); /* Native input stays unity even when fill is selected. */
+  fixture(640, 13714);
+  assert(video_measure(&signal) && video_apply(&signal));
+  assert(timing(7) - timing(5) == 800 && factor(0) == 0xccccd);
+  assert((registers[0][0x32] & 0x13) == 0x11);
+  video_blank(1);
+  before = indirect_writes;
+  video_set_aspect(0); /* Save preference during signal loss, without writes. */
+  assert(indirect_writes == before);
+  assert(video_apply(&signal));
+  assert_picture(640);
+}
+
 int main(void) {
   video_signal_t signal;
   unsigned phase;
@@ -399,6 +468,7 @@ int main(void) {
   unsigned sum;
 
   video_init();
+  for (phase = 0; phase < 6; ++phase) assert(picture_coefficients[phase] == 128);
   assert(registers[2][0xa7] == 0x6f); /* UC-586 differential and R/B swaps. */
   assert(timing(0) + 4 == panel.htotal);
   assert(timing(5) + 10 == panel.hstart);
@@ -456,6 +526,8 @@ int main(void) {
   cvt_profile();
   reject_cases();
   avmute_recovery();
+  picture_controls();
+  aspect_controls();
   puts("video: panel encoding, scaling, mode validation and timeout checks passed");
   return 0;
 }

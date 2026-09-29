@@ -33,6 +33,7 @@ enum {
 #define RETRY_MS 250UL
 
 static uint8_t state;
+static uint8_t user_muted;
 static uint32_t entered, pll_started, measured_rate;
 
 static uint8_t read_audio(uint8_t index) {
@@ -52,6 +53,23 @@ static void advance(uint8_t next, uint32_t now) {
   entered = now;
 }
 
+void audio_set_mute(uint8_t muted) {
+  user_muted = muted != 0;
+  /* Muting is immediate; unmuting waits for audio_service's signal, rate,
+   * engine and FIFO checks. Keep PLL tracking active during a user mute.
+   */
+  if (user_muted) write_audio(OUTPUT_ENABLE, 0);
+}
+
+uint8_t audio_get_mute(void) { return user_muted; }
+
+uint8_t audio_volume_available(void) {
+  /* The CS4334 has no control interface. RTD gain registers 05/06 are named
+   * in the reference, but their fields and gain encoding remain unverified.
+   */
+  return 0;
+}
+
 void audio_stop(void) {
   write_audio(OUTPUT_ENABLE, 0); /* Disable I2S and SPDIF outputs first. */
   update_audio(AV_CONTROL, ENABLE_AUDIO, 0); /* Preserve video bit 3. */
@@ -68,6 +86,7 @@ void audio_init(void) {
   update_audio(AV_CONTROL, 0x60, 0x40);
   write_audio(FIFO_CONTROL, 0x06);
   entered = pll_started = 0;
+  user_muted = 0;
 }
 
 static void retry(uint32_t now) {
@@ -218,7 +237,6 @@ void audio_service(uint32_t now, uint8_t video_valid) {
     }
     update_audio(WATCHDOG, STATUS_FIFO, STATUS_FIFO);
     update_audio(TMDS_WATCHDOG, 0x80, 0x80);
-    write_audio(OUTPUT_ENABLE, 0x0f); /* I2S only, first pair routed to SD0. */
     advance(AUDIO_PLAYING, now);
     break;
   case AUDIO_PLAYING:
@@ -226,6 +244,11 @@ void audio_service(uint32_t now, uint8_t video_valid) {
     capture_rate();
     advance(AUDIO_RATE_CHECK, now);
     break;
+  }
+  if (state == AUDIO_PLAYING) {
+    uint8_t outputs = user_muted ? 0 : 0x0f; /* I2S only; SPDIF stays off. */
+    if (read_audio(OUTPUT_ENABLE) != outputs)
+      write_audio(OUTPUT_ENABLE, outputs);
   }
 }
 
