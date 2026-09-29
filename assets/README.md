@@ -53,5 +53,14 @@ exceeds the panel is not shown.
 yellow/cyan/magenta/white, gray/maroon/olive/navy, teal/purple/orange/lime. Build it
 with `make SPLASH_BMP=tests/color_splash.bmp` to exercise the color renderer.
 
+`rainbow-splash.bmp` is an 800x480 rainbow demo with a white Adafruit logo.
+Build it with `make SPLASH_BMP=assets/rainbow-splash.bmp`. It uses the same
+automatic resizing and palette conversion, displaying at 720x432 on the blue
+background for five seconds. The default logo remains available as `splash.bmp`.
+The rainbow artwork was generated with the built-in image-generation tool,
+using the high-resolution logo from page 3 of the official
+[Adafruit brand guide](https://cdn-blog.adafruit.com/uploads/2017/03/adafruit_brand_identity_guidelines_update.pdf)
+as a reference. Adafruit retains its logo and trademark rights.
+
 The startup background and five-second duration are in `src/app/monitor.c`.
 No vendor bitmap, compressed logo block or runtime decompressor is needed.
