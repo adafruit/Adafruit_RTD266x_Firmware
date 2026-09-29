@@ -145,7 +145,7 @@ static void receiver_init(void) {
   /* 00 is TMDS on this silicon; older RTD2660 documentation says reserved. */
   rtd_update(0, SYNC_SOURCE, 0x03, 0);
   rtd_update(0, INPUT, 0x0f, 0x07);
-  rtd_update(0, DISPLAY, 0x28, 0x28);
+  video_blank(1); /* Keep the startup raster independent of input sync. */
   rtd_update(0, INPUT_POLARITY, 0x0c, 0x0c);
 
   rtd_write(2, TMDS_IMPEDANCE, 0xe3);
@@ -366,7 +366,10 @@ uint8_t video_apply(const video_signal_t *signal) {
 }
 
 void video_blank(uint8_t blank) {
-  rtd_update(0, DISPLAY, 0x20, blank ? 0x20 : 0);
+  /* CR28[3]=0 free-runs the panel; bit5 selects its full-screen background.
+   * Once capture is configured, select frame sync and incoming video together.
+   */
+  rtd_update(0, DISPLAY, 0x28, blank ? 0x20 : 0x08);
 }
 
 void video_background(uint8_t red, uint8_t green, uint8_t blue) {

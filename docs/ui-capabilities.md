@@ -6,31 +6,37 @@ general-purpose RGB framebuffer accessible to the 8051.
 
 ## What is implemented
 
-`src/rtd/osd.c` builds a two-line `ADAFRUIT / RTD266X` overlay using ten original
-glyphs. It uploads uncompressed one-bit tiles and a small row/character map to
-OSD SRAM. Initialization leaves the overlay off; `osd_show_splash()` enables it
-and `osd_hide()` restores unobstructed video. Initialize again after a scaler
-reset. Output timing must be running before a splash can be visible.
+The startup screen fills the panel with a solid background and a large centered
+`ADAFRUIT / RTD266X` title. `src/app/monitor.c` holds that screen for five seconds
+before acquiring input video. `src/rtd/video.c` keeps the display clock and
+timing generator running independently of input sync during this interval.
 
-The UC-586 bench test displayed readable text over native video and removed it
-after startup. The SRAM port accepts Byte0, Byte1, Byte2 while each glyph's first
-scan line occupies bits 23:12. Horizontal frame delay uses four-pixel units;
-vertical delay uses lines. The splash remains an optional build feature.
-A no-input boot splash additionally needs a running display clock and background
-raster; the OSD does not generate those by itself. The lettering is generated
-from this project's original glyphs, with no extracted vendor font or logo.
+`src/rtd/osd.c` supplies the title from original one-bit glyphs and a small
+row/character map in OSD SRAM. Initialization leaves the title off;
+`osd_show_splash()` enables it and `osd_hide()` removes it. The application owns
+the full-screen background and handover to video. Initialize the OSD again
+after a scaler reset. Arbitrary full-color bitmap loading is not implemented.
+
+The SRAM port accepts Byte0, Byte1, Byte2 while each glyph's first scan line
+occupies bits 23:12. Before global zoom, horizontal frame delay uses four-pixel
+units and vertical delay uses lines. Global 2x zoom doubles those delays as
+well as the glyphs. The startup screen can be disabled at build time.
+The lettering is generated from this project's original glyphs, with no
+extracted vendor font or logo.
 
 The driver uses 12x18 tiles. Its original 5x7 source lettering is expanded into
 2x2 blocks with a one-pixel horizontal and two-pixel vertical margin, then each
-OSD row requests another 2x scale. The rows occupy 192x36 and 168x36 pixels. The
+OSD row and global frame each request another 2x scale. The title occupies
+384x144 pixels; a half-width blank tile centers the shorter second line. The
 row map starts at SRAM word zero, character selections at word `0x010`, and
-fonts at word `0x100`; they do not overlap. The complete font occupies 270 bytes
+fonts at word `0x100`; they do not overlap. The complete font occupies 297 bytes
 of dedicated OSD SRAM, not 8051 XRAM.
 
 ## Hardware capability and verification boundary
 
 | Control | Hardware basis | Project status |
 | --- | --- | --- |
+| Full-screen startup | Free-running display background plus a centered OSD title | Five-second startup screen; input video is enabled afterward |
 | Text menus | Row and character maps, proportional 12x18 tiles, 16-color palette, transparent background | Minimal splash driver; menu navigation and full font still needed |
 | Small graphic splash | 1-, 2- or 4-bit tiles in dedicated OSD SRAM, with shared palette and window effects | Feasible; no image converter or arbitrary bitmap API yet |
 | Video brightness | Per-channel RGB additive coefficients, separate from backlight power | Documented, not yet exposed or bench verified |

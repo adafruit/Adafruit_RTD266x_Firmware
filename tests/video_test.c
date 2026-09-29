@@ -185,7 +185,7 @@ int main(void) {
   assert(timing(7) - timing(5) == panel.width);
   assert(timing(0x12) - timing(0x10) == panel.height);
   assert(registers[0][0x29] == 6);
-  assert(registers[0][0x28] & 0x20);
+  assert((registers[0][0x28] & 0xa8) == 0xa0); /* Forced background, free-run. */
   assert(!(registers[0][0x28] & 0x14)); /* 24-bit single-port output. */
   assert(coefficient_count == 128);
   for (phase = 0; phase < 16; ++phase) {
@@ -210,7 +210,11 @@ int main(void) {
   assert(factor(0) == 0xfffff && factor(1) == 0xfffff);
   assert((registers[0][0x32] & 0x13) == 0x10);
   assert(registers[0][0x40] == 2 && registers[0][0x41] == 40);
-  assert(!(registers[0][0x28] & 0x20));
+  assert((registers[0][0x28] & 0xa8) == 0x88); /* Input video, frame sync. */
+  video_blank(1);
+  assert((registers[0][0x28] & 0xa8) == 0xa0); /* Signal loss needs no IVS. */
+  video_blank(0);
+  assert((registers[0][0x28] & 0xa8) == 0x88);
 
   fixture(640, 13714);
   measurement[0][3] = 13; /* The alternate 525-line endpoint also works. */

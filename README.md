@@ -34,8 +34,11 @@ bank0 image. Local development uses SDCC 4.5.0. Firmware variants get separate
 output directories so changing a board, panel, application or splash setting
 cannot reuse the other variant's object files.
 
-The default build shows a five-second `ADAFRUIT / RTD266X` boot overlay.
-The glyphs are original and stored in the scaler's OSD SRAM. Use
+The default build shows a full-screen startup background with a large centered
+`ADAFRUIT / RTD266X` title. Incoming video stays hidden for five seconds, then
+the firmware acquires and displays it. The panel free-runs during startup so
+the screen does not require an input signal. The title uses original glyphs
+stored in the scaler's OSD SRAM. Use
 `make SPLASH=0` to omit it; that build uses a separate `-splash0` directory.
 
 `make TRACE=1` enables bench diagnostics in the EDID ASCII descriptor and MCU
@@ -103,11 +106,14 @@ From the tester directory, use its `host.py`:
 ```sh
 python host.py program /path/to/firmware-full.bin \
   --backup /path/to/current-verified.bin --allow-write --receipt program.json
+python host.py reset-chip
 ```
 
 The backup must match the image currently installed, which is the original
 only on the first run. The programmer compares the complete current image,
 writes changed sectors, verifies all bytes and restores flash protection.
+The final command requests a whole-chip reset; an ISP-only MCU restart can
+retain peripheral state.
 Keep unexpected readbacks before making further changes. The retained flash
 tail is not linked into the new program and is not a settings-storage area.
 
@@ -115,17 +121,18 @@ tail is not linked into the new program and is not a settings-storage area.
 
 On 2026-09-29, the fresh implementation displayed native 800x480 text and grids,
 expanded 640x480 text and grids to the full panel, blanked on signal loss, and
-reacquired native video when the source returned. The default build displayed
-readable splash text near the upper left and removed it after startup. These
-checks used the Feather DVI source, not a general HDMI compatibility suite.
-A physical power cycle of this final build also displayed the splash and
-returned to video. Software whole-chip restart was exercised during bring-up.
+reacquired native video when the source returned. The full-screen startup
+background and centered title were verified after a whole-chip reset with
+the source enabled and disabled, followed by handover to video. These checks
+used the Feather DVI source, not a general
+HDMI compatibility suite. Physical cold boot was tested on the initial video
+implementation; the full-screen replacement was tested by whole-chip reset.
 
 SDCC 4.5.0 and host checks pass for splash-on, splash-off and diagnostic builds,
 including a binary/map check that all six interrupt vectors reach the linked
-handlers. The tested default program uses 11,153 bytes of flash and 132 bytes
+handlers. The tested default program uses 11,244 bytes of flash and 132 bytes
 of XRAM; its 64 KiB bank0 SHA256 is
-`7aa962f6eabedd125aec32ebc949faa3a0f66f93d7f5f714ea6aca62b1a552df`.
+`b399c530cd6abc1d2458eb393754ec05dd92cb90ff943c430bcfee8e8efd72af`.
 Programming verified all 512 KiB and restored the original protection byte
 `0x0C`. Builds, code and register notes are provided; stock firmware dumps and
 the preserved original flash tail are not distributed.

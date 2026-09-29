@@ -17,12 +17,14 @@
 #define OSD_FONT_BASE 0x0100
 #define OSD_SRAM 0x1000
 #define OSD_ALL_BYTES 0xc000
+#define SPLASH_WIDTH 384u
+#define SPLASH_HEIGHT 144u
 
-/* Original five-column, seven-row block lettering: A D F R U I T 2 6 X.
+/* Original five-column, seven-row block lettering: A D F R U I T 2 6 X, blank.
  * Each source pixel becomes a 2x2 block inside a 12x18 hardware tile.
  * These patterns were drawn for this project; no vendor font is included.
  */
-static const OSD_CODE uint8_t letters[10][7] = {
+static const OSD_CODE uint8_t letters[11][7] = {
     {0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11},
     {0x1c, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1c},
     {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10},
@@ -33,10 +35,11 @@ static const OSD_CODE uint8_t letters[10][7] = {
     {0x0e, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1f},
     {0x07, 0x08, 0x10, 0x1e, 0x11, 0x11, 0x0e},
     {0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11},
+    {0, 0, 0, 0, 0, 0, 0},
 };
-static const OSD_CODE uint8_t splash_letters[15] = {
+static const OSD_CODE uint8_t splash_letters[16] = {
     0, 1, 0, 2, 3, 4, 5, 6, /* ADAFRUIT */
-    3, 6, 1, 7, 8, 8, 9     /* RTD266X */
+    10, 3, 6, 1, 7, 8, 8, 9 /* Half-width space, RTD266X */
 };
 
 static void select_word(uint16_t address) {
@@ -54,11 +57,12 @@ static void write_word(uint16_t address, uint8_t a, uint8_t b, uint8_t c) {
 }
 
 static void set_frame(uint8_t enabled) {
-  /* Horizontal delay counts groups of four pixels; vertical delay counts
-   * lines. Include blanking to place the overlay inside the active raster.
+  /* Global 2x zoom also doubles both frame delays. Horizontal delay counts
+   * groups of four pixels before zoom; vertical delay counts lines.
+   * Center the title within the active raster, then include blanking.
    */
-  uint16_t x = (panel.hstart + 32) / 4;
-  uint16_t y = panel.vstart + 32;
+  uint16_t x = (panel.hstart + (panel.width - SPLASH_WIDTH) / 2) / 8;
+  uint16_t y = (panel.vstart + (panel.height - SPLASH_HEIGHT) / 2) / 2;
   write_word(0, (uint8_t)(y >> 3), (uint8_t)(x >> 2),
              (uint8_t)(((x & 3) << 6) | ((y & 7) << 3) | enabled));
 }
@@ -66,6 +70,8 @@ static void set_frame(uint8_t enabled) {
 void osd_hide(void) {
   rtd_update(0, 0x6c, 0x01, 0);
   set_frame(0);
+  /* Manual p383 requires global double width off when OSD is inactive. */
+  write_word(3, 0, 0, 0);
 }
 
 void osd_init(void) {
@@ -73,8 +79,8 @@ void osd_init(void) {
   uint16_t pixels;
 
   osd_hide();
-  /* Disable global zoom/blink, compression and special scrolling modes.
-   * Per-row 2x zoom below is separate from the global zoom control.
+  /* Keep global zoom off until show; disable compression and scrolling.
+   * Row zoom (p393) combines with global zoom (p384) for 4x hardware tiles.
    */
   write_word(3, 0, 0, 0);
   write_word(5, 0, 0, 0);
@@ -90,15 +96,18 @@ void osd_init(void) {
    * commands request 2x width and height; the map ends before font data.
    */
   write_word(OSD_SRAM | 0, 0x83, (uint8_t)(17u << 3), 8);
-  write_word(OSD_SRAM | 1, 0x83, (uint8_t)(17u << 3), 7);
+  write_word(OSD_SRAM | 1, 0x83, (uint8_t)(17u << 3), 8);
   write_word(OSD_SRAM | 2, 0, 0, 0);
   for (i = 0; i < sizeof(splash_letters); ++i) {
-    /* Twelve-pixel 1-bit font, palette 1 foreground, transparent background. */
-    write_word(OSD_SRAM | (OSD_MAP_BASE + i), 0x8c, splash_letters[i], 0x10);
+    /* A six-pixel blank shifts the seven-letter second line by half a tile.
+     * Both lines then share a center; palette0 keeps the background clear.
+     */
+    write_word(OSD_SRAM | (OSD_MAP_BASE + i), i == 8 ? 0x86 : 0x8c,
+               splash_letters[i], 0x10);
   }
 
   select_word(OSD_ALL_BYTES | OSD_SRAM | OSD_FONT_BASE);
-  for (glyph = 0; glyph < 10; ++glyph) {
+  for (glyph = 0; glyph < sizeof(letters) / sizeof(letters[0]); ++glyph) {
     for (row = 0; row < 9; ++row) {
       pixels = 0;
       if (row > 0 && row < 8) {
@@ -129,6 +138,8 @@ void osd_init(void) {
 }
 
 void osd_show_splash(void) {
+  /* Global 2x width/height scales the already doubled character rows. */
+  write_word(3, 0, 0x03, 0);
   set_frame(1);
   rtd_update(0, 0x6c, 0x01, 0x01);
 }

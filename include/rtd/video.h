@@ -34,6 +34,7 @@ void video_init(void);
 /* Returns zero for absent, timed-out, or unsupported input. */
 uint8_t video_measure(video_signal_t *signal);
 uint8_t video_apply(const video_signal_t *signal);
+/* A blanked display free-runs without input; unblank only after video_apply. */
 void video_blank(uint8_t blank);
 void video_background(uint8_t red, uint8_t green, uint8_t blue);
 

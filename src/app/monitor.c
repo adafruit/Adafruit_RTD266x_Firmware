@@ -19,10 +19,6 @@ void main(void) {
   video_signal_t signal;
   uint16_t displayed_width = 0, candidate_width = 0;
   uint8_t matching_samples = 0;
-#if RTD_SPLASH
-  uint8_t splash_visible = 1;
-  uint32_t splash_started;
-#endif
 
   platform_init();
   mcu_write(0x19, 'N'); /* New firmware; scratch register, not flash. */
@@ -33,9 +29,15 @@ void main(void) {
   video_background(8, 8, 8);
   mcu_write(0xf2, 2);
 #if RTD_SPLASH
+  /* The startup screen owns the entire raster. Start video acquisition only
+   * after it ends, so incoming pixels cannot appear behind the title.
+   */
+  video_background(8, 24, 48);
   osd_init();
   osd_show_splash();
-  splash_started = platform_millis();
+  platform_delay_ms(5000);
+  osd_hide();
+  video_background(8, 8, 8);
 #endif
 
   for (;;) {
@@ -58,13 +60,6 @@ void main(void) {
     } else {
       candidate_width = matching_samples = 0;
     }
-#if RTD_SPLASH
-    if (splash_visible &&
-        (uint32_t)(platform_millis() - splash_started) >= 5000UL) {
-      osd_hide();
-      splash_visible = 0;
-    }
-#endif
 #if RTD_TRACE
     diagnostics_measurement(signal.error, signal.detail[0], signal.detail[1],
                              signal.detail[2]);

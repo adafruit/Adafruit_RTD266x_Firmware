@@ -75,6 +75,15 @@ The manual p41 specifies 64 stored 12-bit coefficients, low byte first, with
 the other half supplied by symmetry. The new table is loaded into inactive
 bank 2 for both color paths and selected only for horizontal filtering.
 
+## Startup and missing input
+
+The panel starts in free-running mode with CR28 bit7 forcing the timing
+generator on, bit5 selecting the full-screen background, and bit3 clear
+(manual pp30–31). This raster does not depend on input VSYNC. The application
+shows its title over that background for five seconds before measuring video.
+Mode application configures capture and scaling before selecting frame sync
+and revealing input pixels. Signal loss returns to the free-running background.
+
 ## Bench diagnostics
 
 With `TRACE=1`, EDID bytes 95–107 contain one hexadecimal error digit followed
