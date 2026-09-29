@@ -30,9 +30,9 @@ void main(void) {
   mcu_write(0xf2, 2);
 #if RTD_SPLASH
   /* The startup screen owns the entire raster. Start video acquisition only
-   * after it ends, so incoming pixels cannot appear behind the title.
+   * after it ends, so incoming pixels cannot appear behind the bitmap.
    */
-  video_background(8, 24, 48);
+  video_background(0, 32, 128);
   osd_init();
   osd_show_splash();
   platform_delay_ms(5000);

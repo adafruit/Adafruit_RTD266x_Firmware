@@ -17,7 +17,7 @@ SOURCES := src/platform/io.c src/platform/mcs51.c src/platform/ddc.c \
            src/rtd/edid.c src/rtd/video.c src/rtd/osd.c \
            boards/$(BOARD)/board.c panels/$(PANEL).c src/app/$(APP).c
 OBJECTS := $(patsubst %.c,$(OUT)/%.rel,$(SOURCES))
-HEADERS := $(wildcard include/rtd/*.h boards/$(BOARD)/*.h)
+HEADERS := $(wildcard include/rtd/*.h boards/$(BOARD)/*.h assets/*.h)
 CFLAGS := -mmcs51 --std-c11 --model-large --stack-auto --no-xinit-opt \
           -Iinclude -Iboards/$(BOARD) -DRTD_SPLASH=$(SPLASH) -DRTD_TRACE=$(TRACE)
 LDFLAGS := --xram-loc 0xfb00 --xram-size 512 --code-size 65536
@@ -37,9 +37,10 @@ $(OUT)/firmware.ihx: $(OBJECTS)
 $(OUT)/firmware.bin: $(OUT)/firmware.ihx
 	makebin -s 65536 $< $@
 
-check: firmware build/tests/edid_test build/tests/video_test
+check: firmware build/tests/edid_test build/tests/video_test build/tests/osd_test
 	build/tests/edid_test
 	build/tests/video_test
+	build/tests/osd_test
 
 build/tests/edid_test: tests/edid_test.c src/rtd/edid.c panels/$(PANEL).c $(HEADERS)
 	@mkdir -p $(dir $@)
@@ -48,3 +49,7 @@ build/tests/edid_test: tests/edid_test.c src/rtd/edid.c panels/$(PANEL).c $(HEAD
 build/tests/video_test: tests/video_test.c src/rtd/video.c $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Iboards/$(BOARD) $< src/rtd/video.c -o $@
+
+build/tests/osd_test: tests/osd_test.c src/rtd/osd.c panels/$(PANEL).c $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Iboards/$(BOARD) $< src/rtd/osd.c panels/$(PANEL).c -o $@

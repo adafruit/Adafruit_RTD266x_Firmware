@@ -34,11 +34,12 @@ bank0 image. Local development uses SDCC 4.5.0. Firmware variants get separate
 output directories so changing a board, panel, application or splash setting
 cannot reuse the other variant's object files.
 
-The default build shows a full-screen startup background with a large centered
-`ADAFRUIT / RTD266X` title. Incoming video stays hidden for five seconds, then
-the firmware acquires and displays it. The panel free-runs during startup so
-the screen does not require an input signal. The title uses original glyphs
-stored in the scaler's OSD SRAM. Use
+The default build shows a full-screen blue startup background with a centered
+white Adafruit flower and wordmark bitmap. Incoming video stays hidden for five
+seconds, then the firmware acquires and displays it. The panel free-runs during startup so
+the screen does not require an input signal. The bitmap is split into tiles
+stored in the scaler's OSD SRAM. See the
+[artwork format and attribution](assets/README.md) to substitute a different image. Use
 `make SPLASH=0` to omit it; that build uses a separate `-splash0` directory.
 
 `make TRACE=1` enables bench diagnostics in the EDID ASCII descriptor and MCU
@@ -56,6 +57,7 @@ operation. See [diagnostic decoding](docs/video-registers.md#bench-diagnostics).
 | `src/rtd/` | Video acquisition, clock/scaler configuration, EDID generation and OSD |
 | `src/app/` | Firmware policy: acquire video, handle loss and show a splash |
 | `include/rtd/` | Small interfaces between those layers |
+| `assets/` | Startup bitmap and its license |
 | `tests/` | Host checks for timing arithmetic, register encoding and rejection paths |
 
 The video driver names the scaler page on every register access. The interrupt
@@ -122,17 +124,19 @@ tail is not linked into the new program and is not a settings-storage area.
 On 2026-09-29, the fresh implementation displayed native 800x480 text and grids,
 expanded 640x480 text and grids to the full panel, blanked on signal loss, and
 reacquired native video when the source returned. The full-screen startup
-background and centered title were verified after a whole-chip reset with
+background and centered bitmap were verified after a whole-chip reset with
 the source enabled and disabled, followed by handover to video. These checks
 used the Feather DVI source, not a general
 HDMI compatibility suite. Physical cold boot was tested on the initial video
-implementation; the full-screen replacement was tested by whole-chip reset.
+implementation; the bitmap splash was tested by whole-chip reset. Bitmap upload
+precedes the five-second hold, so the blue background appears before the logo.
 
 SDCC 4.5.0 and host checks pass for splash-on, splash-off and diagnostic builds,
 including a binary/map check that all six interrupt vectors reach the linked
-handlers. The tested default program uses 11,244 bytes of flash and 132 bytes
+handlers and a pixel-by-pixel reconstruction of the bitmap from OSD writes.
+The tested default program uses 12,163 bytes of flash and 132 bytes
 of XRAM; its 64 KiB bank0 SHA256 is
-`b399c530cd6abc1d2458eb393754ec05dd92cb90ff943c430bcfee8e8efd72af`.
+`c2ecc173c9d777066b49d473e1916bf759a0c722873666a55dd3edc1155e0098`.
 Programming verified all 512 KiB and restored the original protection byte
 `0x0C`. Builds, code and register notes are provided; stock firmware dumps and
 the preserved original flash tail are not distributed.

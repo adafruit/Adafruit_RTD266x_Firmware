@@ -8,6 +8,7 @@
 #else
 #define OSD_CODE
 #endif
+#include "../../assets/splash_bitmap.h"
 
 /* Realtek RTD2660 register manual, pp. 64-65, 81, 358-359, 383-398.
  * All accesses below are to the common scaler page. The OSD address selects
@@ -17,30 +18,47 @@
 #define OSD_FONT_BASE 0x0100
 #define OSD_SRAM 0x1000
 #define OSD_ALL_BYTES 0xc000
-#define SPLASH_WIDTH 384u
-#define SPLASH_HEIGHT 144u
+#define BITMAP_STRIDE ((SPLASH_BITMAP_WIDTH + 7u) / 8u)
+#define TILE_COLUMNS ((SPLASH_BITMAP_WIDTH + 11u) / 12u)
+#define TILE_ROWS ((SPLASH_BITMAP_HEIGHT + 17u) / 18u)
+#define TILE_COUNT (TILE_COLUMNS * TILE_ROWS)
+#define BITMAP_PAD_X ((TILE_COLUMNS * 12u - SPLASH_BITMAP_WIDTH) / 2u)
+#define BITMAP_PAD_Y ((TILE_ROWS * 18u - SPLASH_BITMAP_HEIGHT) / 2u)
+#define SPLASH_WIDTH (TILE_COLUMNS * 12u * 4u)
+#define SPLASH_HEIGHT (TILE_ROWS * 18u * 4u)
 
-/* Original five-column, seven-row block lettering: A D F R U I T 2 6 X, blank.
- * Each source pixel becomes a 2x2 block inside a 12x18 hardware tile.
- * These patterns were drawn for this project; no vendor font is included.
+#if SPLASH_BITMAP_WIDTH == 0 || SPLASH_BITMAP_HEIGHT == 0
+#error Splash bitmap dimensions must be nonzero
+#endif
+/* Map entries and tile data must not overlap or use the extended SRAM bank.
+ * This driver uses eight-bit tile IDs and a fixed 4x display scale.
  */
-static const OSD_CODE uint8_t letters[11][7] = {
-    {0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11},
-    {0x1c, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1c},
-    {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10},
-    {0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11},
-    {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e},
-    {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1f},
-    {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04},
-    {0x0e, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1f},
-    {0x07, 0x08, 0x10, 0x1e, 0x11, 0x11, 0x0e},
-    {0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11},
-    {0, 0, 0, 0, 0, 0, 0},
-};
-static const OSD_CODE uint8_t splash_letters[16] = {
-    0, 1, 0, 2, 3, 4, 5, 6, /* ADAFRUIT */
-    10, 3, 6, 1, 7, 8, 8, 9 /* Half-width space, RTD266X */
-};
+#if TILE_ROWS >= OSD_MAP_BASE || TILE_COUNT > OSD_FONT_BASE - OSD_MAP_BASE
+#error Splash bitmap does not fit the OSD map
+#endif
+#if OSD_FONT_BASE + TILE_COUNT * 9u > 4096u
+#error Splash bitmap exceeds the first 12 KiB OSD SRAM bank
+#endif
+_Static_assert(sizeof(splash_bitmap) == BITMAP_STRIDE * SPLASH_BITMAP_HEIGHT,
+               "Splash bitmap dimensions do not match its data");
+
+/* Extract twelve adjacent pixels from the ordinary row-major bitmap.
+ * Center it within a whole-tile rectangle; padding stays transparent.
+ */
+static uint16_t bitmap_line(uint16_t x, uint16_t y) {
+  uint8_t bit;
+  uint16_t pixels = 0;
+  x -= BITMAP_PAD_X;
+  y -= BITMAP_PAD_Y;
+  for (bit = 0; bit < 12; ++bit, ++x) {
+    pixels <<= 1;
+    if (x < SPLASH_BITMAP_WIDTH && y < SPLASH_BITMAP_HEIGHT &&
+        (splash_bitmap[y * BITMAP_STRIDE + x / 8] & (0x80u >> (x & 7)))) {
+      pixels |= 1;
+    }
+  }
+  return pixels;
+}
 
 static void select_word(uint16_t address) {
   /* This small layout stays below the extended SRAM bank at 12 KiB. */
@@ -59,7 +77,7 @@ static void write_word(uint16_t address, uint8_t a, uint8_t b, uint8_t c) {
 static void set_frame(uint8_t enabled) {
   /* Global 2x zoom also doubles both frame delays. Horizontal delay counts
    * groups of four pixels before zoom; vertical delay counts lines.
-   * Center the title within the active raster, then include blanking.
+   * Center the bitmap within the active raster, then include blanking.
    */
   uint16_t x = (panel.hstart + (panel.width - SPLASH_WIDTH) / 2) / 8;
   uint16_t y = (panel.vstart + (panel.height - SPLASH_HEIGHT) / 2) / 2;
@@ -75,8 +93,8 @@ void osd_hide(void) {
 }
 
 void osd_init(void) {
-  uint8_t glyph, row, bit, i;
-  uint16_t pixels;
+  uint8_t tile, row;
+  uint16_t x, y, first, second;
 
   osd_hide();
   /* Keep global zoom off until show; disable compression and scrolling.
@@ -92,40 +110,31 @@ void osd_init(void) {
              ((OSD_MAP_BASE >> 4) & 0xf0) | (OSD_FONT_BASE & 0x0f),
              OSD_FONT_BASE >> 4);
 
-  /* Two rows, 18-pixel tile height encoded as height minus one. The row
+  /* 18-pixel tile height encoded as height minus one. The row
    * commands request 2x width and height; the map ends before font data.
    */
-  write_word(OSD_SRAM | 0, 0x83, (uint8_t)(17u << 3), 8);
-  write_word(OSD_SRAM | 1, 0x83, (uint8_t)(17u << 3), 8);
-  write_word(OSD_SRAM | 2, 0, 0, 0);
-  for (i = 0; i < sizeof(splash_letters); ++i) {
-    /* A six-pixel blank shifts the seven-letter second line by half a tile.
-     * Both lines then share a center; palette0 keeps the background clear.
-     */
-    write_word(OSD_SRAM | (OSD_MAP_BASE + i), i == 8 ? 0x86 : 0x8c,
-               splash_letters[i], 0x10);
+  for (row = 0; row < TILE_ROWS; ++row) {
+    write_word(OSD_SRAM | row, 0x83, (uint8_t)(17u << 3), TILE_COLUMNS);
+  }
+  write_word(OSD_SRAM | TILE_ROWS, 0, 0, 0);
+  for (tile = 0; tile < TILE_COUNT; ++tile) {
+    write_word(OSD_SRAM | (OSD_MAP_BASE + tile), 0x8c, tile, 0x10);
   }
 
   select_word(OSD_ALL_BYTES | OSD_SRAM | OSD_FONT_BASE);
-  for (glyph = 0; glyph < sizeof(letters) / sizeof(letters[0]); ++glyph) {
+  for (tile = 0; tile < TILE_COUNT; ++tile) {
+    x = (tile % TILE_COLUMNS) * 12u;
+    y = (tile / TILE_COLUMNS) * 18u;
     for (row = 0; row < 9; ++row) {
-      pixels = 0;
-      if (row > 0 && row < 8) {
-        for (bit = 0; bit < 5; ++bit) {
-          pixels <<= 2;
-          if (letters[glyph][row - 1] & (0x10 >> bit)) {
-            pixels |= 3;
-          }
-        }
-        pixels <<= 1;
-      }
+      first = bitmap_line(x, y + row * 2u);
+      second = bitmap_line(x, y + row * 2u + 1u);
       /* Byte lanes upload low to high (Byte0, Byte1, Byte2). The first
        * scan line is bits23:12, so it starts in Byte2, not Byte0.
-       * Two identical 12-bit scan lines form this 24-bit SRAM word.
+       * Two consecutive 12-bit scan lines form this 24-bit SRAM word.
        */
-      rtd_write(0, 0x92, (uint8_t)pixels);
-      rtd_write(0, 0x92, (uint8_t)((pixels << 4) | (pixels >> 8)));
-      rtd_write(0, 0x92, (uint8_t)(pixels >> 4));
+      rtd_write(0, 0x92, (uint8_t)second);
+      rtd_write(0, 0x92, (uint8_t)((first << 4) | (second >> 8)));
+      rtd_write(0, 0x92, (uint8_t)(first >> 4));
     }
   }
 
@@ -138,6 +147,9 @@ void osd_init(void) {
 }
 
 void osd_show_splash(void) {
+  if (SPLASH_WIDTH > panel.width || SPLASH_HEIGHT > panel.height) {
+    return;
+  }
   /* Global 2x width/height scales the already doubled character rows. */
   write_word(3, 0, 0x03, 0);
   set_frame(1);

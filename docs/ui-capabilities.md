@@ -6,39 +6,40 @@ general-purpose RGB framebuffer accessible to the 8051.
 
 ## What is implemented
 
-The startup screen fills the panel with a solid background and a large centered
-`ADAFRUIT / RTD266X` title. `src/app/monitor.c` holds that screen for five seconds
-before acquiring input video. `src/rtd/video.c` keeps the display clock and
+The startup screen fills the panel with a blue background and a centered white
+Adafruit flower and wordmark bitmap. `src/app/monitor.c` holds that screen for
+five seconds before acquiring input video. `src/rtd/video.c` keeps the display clock and
 timing generator running independently of input sync during this interval.
 
-`src/rtd/osd.c` supplies the title from original one-bit glyphs and a small
-row/character map in OSD SRAM. Initialization leaves the title off;
+`src/rtd/osd.c` splits a row-major monochrome bitmap into 12x18 tiles and builds
+a row/character map in OSD SRAM. Initialization leaves the bitmap off;
 `osd_show_splash()` enables it and `osd_hide()` removes it. The application owns
 the full-screen background and handover to video. Initialize the OSD again
-after a scaler reset. Arbitrary full-color bitmap loading is not implemented.
+after a scaler reset. Replace `assets/splash_bitmap.h` to change the artwork;
+its format, dimensions and license are documented in `assets/README.md`.
+Full-color bitmap loading is not implemented.
 
 The SRAM port accepts Byte0, Byte1, Byte2 while each glyph's first scan line
 occupies bits 23:12. Before global zoom, horizontal frame delay uses four-pixel
 units and vertical delay uses lines. Global 2x zoom doubles those delays as
 well as the glyphs. The startup screen can be disabled at build time.
-The lettering is generated from this project's original glyphs, with no
-extracted vendor font or logo.
+The supplied 82x64 Adafruit logo is an existing BSD-licensed bitmap, with no
+extracted RTD firmware font or logo. Its pixels are unchanged.
 
-The driver uses 12x18 tiles. Its original 5x7 source lettering is expanded into
-2x2 blocks with a one-pixel horizontal and two-pixel vertical margin, then each
-OSD row and global frame each request another 2x scale. The title occupies
-384x144 pixels; a half-width blank tile centers the shorter second line. The
+The driver centers the bitmap in a 7x4 tile rectangle, adding one transparent
+pixel on each side and four above and below. Each OSD row and the global frame
+request 2x scale, producing a 328x256 logo within a 336x288 rectangle. The
 row map starts at SRAM word zero, character selections at word `0x010`, and
-fonts at word `0x100`; they do not overlap. The complete font occupies 297 bytes
-of dedicated OSD SRAM, not 8051 XRAM.
+fonts at word `0x100`; they do not overlap. The 28 tiles occupy 756 bytes of
+dedicated OSD SRAM, not 8051 XRAM. The source bitmap occupies 704 flash bytes.
 
 ## Hardware capability and verification boundary
 
 | Control | Hardware basis | Project status |
 | --- | --- | --- |
-| Full-screen startup | Free-running display background plus a centered OSD title | Five-second startup screen; input video is enabled afterward |
+| Full-screen startup | Free-running display background plus a centered bitmap | Five-second startup screen; input video is enabled afterward |
 | Text menus | Row and character maps, proportional 12x18 tiles, 16-color palette, transparent background | Minimal splash driver; menu navigation and full font still needed |
-| Small graphic splash | 1-, 2- or 4-bit tiles in dedicated OSD SRAM, with shared palette and window effects | Feasible; no image converter or arbitrary bitmap API yet |
+| Small graphic splash | 1-, 2- or 4-bit tiles in dedicated OSD SRAM, with shared palette and window effects | One-bit bitmap loading implemented; replaceable build-time artwork, fixed white foreground and 4x scale |
 | Video brightness | Per-channel RGB additive coefficients, separate from backlight power | Documented, not yet exposed or bench verified |
 | Video contrast | Per-channel RGB multiplicative coefficients | Documented, not yet exposed or bench verified |
 | Backlight level | Six 12-bit PWM channels and multiplexed output pins | UC-586 stock contains PWM1/pin103 adjustment code; physical brightness response unverified |
