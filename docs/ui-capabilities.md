@@ -45,13 +45,27 @@ on the UC-586's transition into live HSTX video. Camera captures then showed
 640x480, approximately 60.2 Hz, 31.53 kHz and totals 800x524 at the top left,
 followed by unobstructed video after expiry.
 
-`make MENU_PREVIEW=1` adds a ten-second static menu artwork preview after the
-startup splash. It uses the same text renderer, with a green title and a blue
-selection row, before returning to normal input acquisition. Picture, Audio,
-Display and Menu Settings are layout placeholders; this preview does not read
-buttons or change settings. The normal build leaves the preview disabled.
-On the UC-586, a camera capture confirmed readable text, the title color, the
-full-width selection bar and return to video after the preview interval.
+`make MENU_PREVIEW=1` cycles through the main menu and Picture, Audio, Display
+and Menu Settings after the startup splash. Each has three sample variants,
+held for 1.5 seconds after its upload, before returning to normal acquisition.
+Font upload adds time between pages. All values are artwork samples: the preview
+does not read buttons or change video, audio, backlight or stored settings.
+The normal build leaves the preview disabled.
+
+The seven-row, 30-column layout is centered at 720x252 panel pixels. It reuses
+the diagnostic alphabet, adding a percent glyph, and uses green titles, blue
+selection rows and green/gray slider tracks. The map ends before the font base.
+The variants exercise 0/50/100 percent tracks, mute on/off, alternative aspect
+labels, timeout values and a highlighted Back row. Rotation and mirror show
+gray `--` placeholders because their board controls are not implemented.
+Host checks cover every page/variant, slider endpoints, centering, palette and
+return from the larger menu map to the five-row input overlay.
+
+On 2026-09-29, the UC-586 camera sequence confirmed all four submenus at
+0/50/100 percent, the selection and Back rows, and readable labels without
+clipping. After the sequence, the measured input overlay appeared over live
+color bars and expired normally. Full 512 KiB readback matched the preview
+image, and flash protection was restored to `0x0C`.
 
 The [classic RTD2660 Adafruit guide](https://learn.adafruit.com/hdmi-uberguide/rtd2660-hdmi-vga-ntsc-pal-driver-board)
 includes photographed Color, OSD and Function menus. Its Menu/select,

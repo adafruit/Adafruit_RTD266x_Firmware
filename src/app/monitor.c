@@ -45,6 +45,9 @@ void main(void) {
   uint8_t displayed_mode = VIDEO_MODE_NONE, candidate_mode = VIDEO_MODE_NONE;
   uint8_t matching_samples = 0, screen = 0, audio_tick;
   uint32_t info_started = 0;
+#if RTD_MENU_PREVIEW
+  uint8_t preview_page, preview_variant;
+#endif
 
   platform_init();
   mcu_write(0x19, 'N'); /* New firmware; scratch register, not flash. */
@@ -65,8 +68,12 @@ void main(void) {
   osd_hide();
 #endif
 #if RTD_MENU_PREVIEW
-  osd_show_menu_preview();
-  platform_delay_ms(10000);
+  for (preview_page = 0; preview_page < OSD_PREVIEW_COUNT; ++preview_page) {
+    for (preview_variant = 0; preview_variant < 3; ++preview_variant) {
+      osd_show_menu_preview(preview_page, preview_variant);
+      platform_delay_ms(1500);
+    }
+  }
   osd_hide();
 #endif
 

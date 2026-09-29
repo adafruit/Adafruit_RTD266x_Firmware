@@ -107,9 +107,11 @@ CS4334 DAC. See [audio support and validation](docs/audio.md) for its current
 bench status and limits. A complete menu, settings persistence, audio volume
 controls and arbitrary video modes are not implemented.
 
-Build with `make MENU_PREVIEW=1` to review the menu artwork on the display for
-ten seconds after the splash. This opt-in preview has no button actions yet;
-normal builds proceed directly from the splash to video acquisition.
+Build with `make MENU_PREVIEW=1` to cycle through the main menu and all four
+submenus after the splash. Each page shows three sample selections/values,
+including empty, half-full and full sliders. This opt-in artwork preview has
+no button actions and changes no settings; normal builds proceed directly from
+the splash to video acquisition.
 
 ## Programming
 
@@ -172,9 +174,9 @@ including a binary/map check that all six interrupt vectors reach the linked
 handlers and a pixel-by-pixel reconstruction of the bitmap from OSD writes.
 BMP tests cover color preservation, palette reduction, transparent black,
 row/tile/plane ordering, size limits and unchanged generated output.
-The current default build uses 32,364 bytes of flash and 185 bytes
+The current default build uses 34,149 bytes of flash and 185 bytes
 of XRAM; its 64 KiB bank0 SHA256 is
-`52be08f4ed1c904ffb8a4a13e1c32e0362170505a4402247b8951b0598515092`.
+`aa2cc89d13c5a9e5dc3fb89377d242b4cd5166deae1deafdffd2b316de6c54ed`.
 Programming verified all 512 KiB and restored the original protection byte
 `0x0C`. Builds, code and register notes are provided; stock firmware dumps and
 the preserved original flash tail are not distributed.

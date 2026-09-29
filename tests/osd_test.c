@@ -235,7 +235,7 @@ static void check_input(const video_signal_t *signal,
     }
     if (glyph == 0) {
       assert(ink == 0);
-    } else if (glyph == 'A' - 32 || (glyph >= '0' - 32 && glyph <= '9' - 32)) {
+    } else if (glyph == 'A' - 32 || glyph == '%' - 32 || (glyph >= '0' - 32 && glyph <= '9' - 32)) {
       assert(ink > 0);
     }
   }
@@ -338,28 +338,83 @@ static void check_input_messages(void) {
 }
 
 static void check_menu_preview(void) {
-  const char *rows[] = {" ADAFRUIT MENU PREVIEW", " PICTURE", " AUDIO",
-                        " DISPLAY", " MENU SETTINGS"};
-  unsigned row, column, x_delay, y_delay;
-  palette_bytes = 0;
-  osd_show_menu_preview();
-  assert((regs[0x6c] & 1) && (frame[0][2] & 1));
-  assert(palette_bytes == 15 && frame[3][1] == 3);
-  assert(palette[9] == 16 && palette[10] == 64 && palette[11] == 160);
-  assert(palette[12] == 0 && palette[13] == 220 && palette[14] == 120);
-  for (row = 0; row < 5; ++row) {
-    for (column = 0; column < 30; ++column) {
-      unsigned entry = 0x10 + row * 30 + column;
-      char expected = column < strlen(rows[row]) ? rows[row][column] : ' ';
-      assert((char)(sram[entry][1] + 32) == expected);
-      assert(sram[entry][2] == (row == 0 ? 0x42 : row == 1 ? 0x13 : 0x12));
+  const char *titles[] = {" ADAFRUIT MENU PREVIEW", " PICTURE / PREVIEW",
+      " AUDIO / PREVIEW", " DISPLAY / PREVIEW", " MENU SETTINGS / PREVIEW"};
+  const char *first[] = {"PICTURE", "BRIGHTNESS", "VOLUME", "BACKLIGHT", "TIMEOUT"};
+  unsigned page, variant, row, column, x_delay, y_delay;
+  char text[7][31];
+  for (page = 0; page < OSD_PREVIEW_COUNT; ++page) {
+    for (variant = 0; variant < 3; ++variant) {
+      palette_bytes = 0;
+      osd_show_menu_preview(page, variant);
+      assert((regs[0x6c] & 1) && (frame[0][2] & 1));
+      assert(palette_bytes == 18 && frame[3][1] == 3);
+      assert(palette[9] == 16 && palette[10] == 64 && palette[11] == 160);
+      assert(palette[12] == 0 && palette[13] == 220 && palette[14] == 120);
+      assert(palette[15] == 96 && palette[16] == 96 && palette[17] == 96);
+      assert(0x10 + 7 * 30 <= 0x100); /* Map cannot overwrite glyphs. */
+      for (row = 0; row < 7; ++row) {
+        assert(sram[row][0] == 0x80 && sram[row][1] == 0x88);
+        assert(sram[row][2] == 30);
+        for (column = 0; column < 30; ++column) {
+          unsigned entry = 0x10 + row * 30 + column;
+          assert(sram[entry][0] == 0x8c && sram[entry][1] < 59);
+          text[row][column] = (char)(sram[entry][1] + 32);
+        }
+        text[row][30] = '\0';
+      }
+      assert(sram[7][0] == 0 && sram[7][1] == 0 && sram[7][2] == 0);
+      assert(strncmp(text[0], titles[page], strlen(titles[page])) == 0);
+      assert(strncmp(text[1] + 1, first[page], strlen(first[page])) == 0);
+      assert(sram[0x10][2] == 0x42);
+      if (page == OSD_PREVIEW_MAIN) {
+        assert(strstr(text[6], "SAMPLE VALUES - NO CHANGES"));
+        row = variant == 2 ? 4 : variant + 1;
+      } else {
+        assert(strncmp(text[6], " BACK", 5) == 0);
+        row = variant == 2 ? 6 : variant == 1 ? 3 : 1;
+        if (page == OSD_PREVIEW_MENU) {
+          assert(strstr(text[1], variant == 0 ? "5S" : variant == 1 ? "10S" : "15S"));
+          assert(strstr(text[2], "CENTER") && strstr(text[5], "ENGLISH"));
+        } else {
+          assert(strstr(text[1], variant == 0 ? "0%" : variant == 1 ? "50%" : "100%"));
+        }
+      }
+      assert(sram[0x10 + row * 30][2] == 0x13);
+      for (column = 1; column < 7; ++column) {
+        unsigned color = column == row ? 0x13 : 0x12;
+        if (page == OSD_PREVIEW_MAIN && column == 6) color = 0x52;
+        assert(sram[0x10 + column * 30][2] == color);
+      }
+      /* Decode slider tracks independently: exactly 0, 10 or 20 filled cells. */
+      if (page != OSD_PREVIEW_MAIN) {
+        unsigned track_row = page == OSD_PREVIEW_MENU ? 4 : 2;
+        unsigned filled = 0;
+        for (column = 2; column < 22; ++column) {
+          unsigned entry = 0x10 + track_row * 30 + column;
+          assert(sram[entry][1] == 0); /* Blank glyph with opaque cell color. */
+          assert(sram[entry][2] == 0x14 || sram[entry][2] == 0x15);
+          filled += sram[entry][2] == 0x14;
+        }
+        assert(filled == variant * 10);
+      }
+      if (page == OSD_PREVIEW_AUDIO) {
+        assert(strstr(text[3], variant == 1 ? "ON" : "OFF"));
+        assert(strstr(text[4], "48KHZ") && strstr(text[5], "STEREO"));
+      }
+      if (page == OSD_PREVIEW_DISPLAY) {
+        assert(strstr(text[3], variant == 1 ? "4:3" : "FILL"));
+        assert(strstr(text[4], "--") && strstr(text[5], "--"));
+        assert(sram[0x10 + 4 * 30 + 22][2] == 0x52);
+        assert(sram[0x10 + 5 * 30 + 22][2] == 0x52);
+      }
+      x_delay = ((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6);
+      y_delay = ((unsigned)frame[0][0] << 3) | ((frame[0][2] >> 3) & 7);
+      assert(x_delay * 8 + BOARD_OSD_X_CORRECTION - panel.hstart == 40);
+      assert(y_delay * 2 - runtime_vstart == 114);
     }
   }
-  x_delay = ((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6);
-  y_delay = ((unsigned)frame[0][0] << 3) | ((frame[0][2] >> 3) & 7);
-  assert(x_delay * 8 + BOARD_OSD_X_CORRECTION - panel.hstart == 40);
-  assert(y_delay * 2 - runtime_vstart == 150);
-  puts("OSD menu preview text, highlight, palette and centering passed");
+  puts("OSD all submenu pages, slider limits, selections and centering passed");
 }
 
 int main(void) {

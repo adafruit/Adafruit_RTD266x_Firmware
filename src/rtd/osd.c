@@ -220,6 +220,9 @@ static uint16_t text_scanline(uint8_t character, uint8_t y) {
     bits = 4;
   } else if (character == '/') {
     bits = 1u << (y * 4 / 6);
+  } else if (character == '%') {
+    static const OSD_CODE uint8_t percent[7] = {25,26,2,4,8,11,19};
+    bits = percent[y];
   }
   for (x = 0; x < 5; ++x) {
     if (bits & (16u >> x)) {
@@ -231,6 +234,7 @@ static uint16_t text_scanline(uint8_t character, uint8_t y) {
 
 #define TEXT_COLUMNS 30
 #define TEXT_ROWS 5
+#define MENU_ROWS 7
 static uint8_t text_row, text_column, text_color;
 
 static void text_put(char character) {
@@ -303,7 +307,7 @@ static void text_geometry(const video_signal_t *signal) {
   text_next_row();
 }
 
-static void text_begin(void) {
+static void text_begin(uint8_t rows) {
   uint8_t row, character, y;
   uint16_t top, bottom;
   osd_hide();
@@ -313,10 +317,10 @@ static void text_begin(void) {
   write_word(4, OSD_MAP_BASE & 0xff,
              ((OSD_MAP_BASE >> 4) & 0xf0) | (OSD_FONT_BASE & 0x0f),
              OSD_FONT_BASE >> 4);
-  for (row = 0; row < TEXT_ROWS; ++row) {
+  for (row = 0; row < rows; ++row) {
     write_word(OSD_SRAM | row, 0x80, 17u << 3, TEXT_COLUMNS);
   }
-  write_word(OSD_SRAM | TEXT_ROWS, 0, 0, 0);
+  write_word(OSD_SRAM | rows, 0, 0, 0);
   select_word(OSD_ALL_BYTES | OSD_SRAM | OSD_FONT_BASE);
   for (character = ' '; character <= 'Z'; ++character) {
     for (y = 0; y < 18; y += 2) {
@@ -343,7 +347,7 @@ void osd_show_input(const video_signal_t *signal) {
   if (!signal) {
     return;
   }
-  text_begin();
+  text_begin(TEXT_ROWS);
   if (signal->error) {
     text_literal("UNSUPPORTED INPUT");
     text_next_row();
@@ -407,9 +411,48 @@ void osd_show_input(const video_signal_t *signal) {
   rtd_update(0, 0x6c, 1, 1);
 }
 
-void osd_show_menu_preview(void) {
-  text_begin();
-  /* Palette 3: selection blue; palette 4: Adafruit green title. */
+static void preview_label(const char *label, uint8_t selected) {
+  text_color = selected ? 0x13 : 0x12;
+  text_put(' ');
+  text_literal(label);
+  while (text_column < 22) text_put(' ');
+}
+
+static void preview_number(const char *label, uint8_t number, const char *unit,
+                           uint8_t selected) {
+  preview_label(label, selected);
+  text_number(number);
+  text_literal(unit);
+  text_next_row();
+}
+
+static void preview_choice(const char *label, const char *value,
+                           uint8_t selected, uint8_t unavailable) {
+  preview_label(label, selected);
+  if (unavailable) text_color = 0x52;
+  text_literal(value);
+  text_next_row();
+}
+
+static void preview_slider(uint8_t value) {
+  uint8_t cell;
+  text_color = 0x12;
+  text_literal("  ");
+  for (cell = 0; cell < 20; ++cell) {
+    text_color = cell < value / 5 ? 0x14 : 0x15;
+    text_put(' '); /* Opaque background cells form the filled/empty track. */
+  }
+  text_color = 0x12;
+  text_next_row();
+}
+
+void osd_show_menu_preview(uint8_t page, uint8_t variant) {
+  uint8_t value;
+  if (page >= OSD_PREVIEW_COUNT) page = OSD_PREVIEW_MAIN;
+  if (variant > 2) variant = 2;
+  value = variant * 50;
+  text_begin(MENU_ROWS);
+  /* Palette 3: selection blue; 4: green title/slider; 5: empty/disabled gray. */
   rtd_write(0, 0x6e, 0x89);
   rtd_write(0, 0x6f, 16);
   rtd_write(0, 0x6f, 64);
@@ -417,21 +460,65 @@ void osd_show_menu_preview(void) {
   rtd_write(0, 0x6f, 0);
   rtd_write(0, 0x6f, 220);
   rtd_write(0, 0x6f, 120);
+  rtd_write(0, 0x6f, 96);
+  rtd_write(0, 0x6f, 96);
+  rtd_write(0, 0x6f, 96);
   rtd_write(0, 0x6e, 0);
   text_color = 0x42;
-  text_literal(" ADAFRUIT MENU PREVIEW");
+  switch (page) {
+  case OSD_PREVIEW_PICTURE: text_literal(" PICTURE / PREVIEW"); break;
+  case OSD_PREVIEW_AUDIO: text_literal(" AUDIO / PREVIEW"); break;
+  case OSD_PREVIEW_DISPLAY: text_literal(" DISPLAY / PREVIEW"); break;
+  case OSD_PREVIEW_MENU: text_literal(" MENU SETTINGS / PREVIEW"); break;
+  default: text_literal(" ADAFRUIT MENU PREVIEW"); break;
+  }
   text_next_row();
-  text_color = 0x13;
-  text_literal(" PICTURE");
-  text_next_row();
-  text_color = 0x12;
-  text_literal(" AUDIO");
-  text_next_row();
-  text_literal(" DISPLAY");
-  text_next_row();
-  text_literal(" MENU SETTINGS");
-  text_next_row();
+  switch (page) {
+  case OSD_PREVIEW_PICTURE:
+    preview_number("BRIGHTNESS", value, "%", variant == 0);
+    preview_slider(value);
+    preview_number("CONTRAST", 100 - value, "%", variant == 1);
+    preview_slider(100 - value);
+    preview_choice("COLOR TEMPERATURE", "6500K", 0, 0);
+    break;
+  case OSD_PREVIEW_AUDIO:
+    preview_number("VOLUME", value, "%", variant == 0);
+    preview_slider(value);
+    preview_choice("MUTE", variant == 1 ? "ON" : "OFF", variant == 1, 0);
+    preview_choice("FORMAT", "48KHZ", 0, 0);
+    preview_choice("CHANNELS", "STEREO", 0, 0);
+    break;
+  case OSD_PREVIEW_DISPLAY:
+    preview_number("BACKLIGHT", value, "%", variant == 0);
+    preview_slider(value);
+    preview_choice("ASPECT", variant == 1 ? "4:3" : "FILL", variant == 1, 0);
+    preview_choice("ROTATION", "--", 0, 1);
+    preview_choice("MIRROR", "--", 0, 1);
+    break;
+  case OSD_PREVIEW_MENU:
+    preview_number("TIMEOUT", 5 + variant * 5, "S", variant == 0);
+    preview_choice("POSITION", "CENTER", 0, 0);
+    preview_number("OPACITY", value, "%", variant == 1);
+    preview_slider(value);
+    preview_choice("LANGUAGE", "ENGLISH", 0, 0);
+    break;
+  default:
+    preview_choice("PICTURE", "", variant == 0, 0);
+    preview_choice("AUDIO", "", variant == 1, 0);
+    preview_choice("DISPLAY", "", 0, 0);
+    preview_choice("MENU SETTINGS", "", variant == 2, 0);
+    text_color = 0x12;
+    text_next_row();
+    break;
+  }
+  if (page == OSD_PREVIEW_MAIN) {
+    text_color = 0x52;
+    text_literal(" SAMPLE VALUES - NO CHANGES");
+    text_next_row();
+  } else {
+    preview_choice("BACK", "", variant == 2, 0);
+  }
   active_width = TEXT_COLUMNS * 24u;
-  active_height = TEXT_ROWS * 36u;
+  active_height = MENU_ROWS * 36u;
   show_bitmap();
 }
