@@ -1,0 +1,21 @@
+name: Firmware
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        splash: [0, 1]
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sdcc make gcc
+      - run: make -j2 SPLASH=${{ matrix.splash }} check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uc586-splash${{ matrix.splash }}-bank0
+          path: build/uc586-rgb800x480-monitor-splash${{ matrix.splash }}/firmware.bin
