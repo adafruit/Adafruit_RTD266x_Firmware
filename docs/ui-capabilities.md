@@ -107,6 +107,20 @@ data analysis; the project includes only its own color chart and the attributed
 Adafruit bitmap. The 15-color chart, its transparent gaps, and the low-bit-first
 plane order were checked on the UC-586, followed by return to input video.
 
+## Planned OSD settings
+
+Requested runtime options, not yet implemented:
+
+- [ ] Startup Adafruit splash: On / Off.
+- [ ] Connection timing pop-ups: On / Off.
+- [ ] No-signal appearance: Black / Blue / Test pattern.
+- [ ] No-signal timeout: 1 / 2 / 5 / 10 / 20 / Never.
+
+`Never` disables automatic timeout. Timeout units and the action on expiry
+(blanking the image or turning off the backlight) remain to be specified before
+implementation. These runtime choices are separate from the existing build-time
+splash switch and custom no-signal BMP.
+
 ## Hardware capability and verification boundary
 
 | Control | Hardware basis | Project status |
