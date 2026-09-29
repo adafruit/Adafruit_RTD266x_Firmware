@@ -12,17 +12,20 @@
 #endif
 #include "splash_bitmap.h"
 #include "no_signal_bitmap.h"
+#define MENU_FONT_CODE OSD_CODE
+#include "rtd/menu_font.h"
+#include "rtd/menu_icons.h"
 
 /* Realtek RTD2660 register manual, pp. 64-65, 81, 358-359, 383-398.
  * All accesses below are to the common scaler page. The OSD address selects
  * a three-byte word, unlike the scaler's byte-addressed register space.
  */
 #define OSD_MAP_BASE 0x0010
-#define OSD_FONT_BASE 0x0140
+#define OSD_FONT_BASE 0x0180
 #define OSD_SRAM 0x1000
 #define OSD_ALL_BYTES 0xc000
-/* At most 16 columns x 6 rows: maps fit before word 0x140, selectors stay
- * below 128, and even 4-bpp fonts fit in the lower 12 KiB SRAM bank. */
+/* At most 16 columns x 6 rows: maps fit before word 0x180, selectors stay
+ * below 128, and even 4-bpp fonts fit in SRAM words 0x000..0xEFF. */
 #define CHECK_BITMAP(prefix, name) \
   _Static_assert(prefix##_BITMAP_WIDTH > 0 && prefix##_BITMAP_WIDTH <= 192 && \
                  prefix##_BITMAP_HEIGHT > 0 && prefix##_BITMAP_HEIGHT <= 108, \
@@ -40,7 +43,7 @@ static uint16_t active_width, active_height;
 static uint8_t visible, text_loaded;
 
 static void select_word(uint16_t address) {
-  /* This small layout stays below the extended SRAM bank at 12 KiB. */
+  /* This layout stays in the documented SRAM words 0x000..0xEFF. */
   rtd_update(0, 0x93, 0x08, 0);
   rtd_write(0, 0x90, (uint8_t)(address >> 8));
   rtd_write(0, 0x91, (uint8_t)address);
@@ -123,7 +126,7 @@ static void load_bitmap(uint8_t missing_input) {
   write_word(8, 0, 0, 0);
   rtd_update(0, 0x6c, 0x1f, 0);
 
-  /* Font-select base 0x010; one-bit font base 0x140 (both word units). */
+  /* Font-select base 0x010; font base 0x180 (both word units). */
   write_word(4, OSD_MAP_BASE & 0xff,
              ((OSD_MAP_BASE >> 4) & 0xf0) | (OSD_FONT_BASE & 0x0f),
              OSD_FONT_BASE >> 4);
@@ -184,64 +187,20 @@ void osd_show_no_signal(void) {
   show_bitmap();
 }
 
-/* Original five-column, seven-row diagnostic alphabet, doubled inside each
- * 12x18 tile. No vendor firmware font is required. Digits, then A..Z. */
-static const OSD_CODE uint8_t text_font[][7] = {
-  {14,17,19,21,25,17,14}, {4,12,4,4,4,4,14},
-  {14,17,1,2,4,8,31}, {30,1,1,14,1,1,30},
-  {2,6,10,18,31,2,2}, {31,16,16,30,1,1,30},
-  {14,16,16,30,17,17,14}, {31,1,2,4,8,8,8},
-  {14,17,17,14,17,17,14}, {14,17,17,15,1,1,14},
-  {14,17,17,31,17,17,17}, {30,17,17,30,17,17,30},
-  {14,17,16,16,16,17,14}, {30,17,17,17,17,17,30},
-  {31,16,16,30,16,16,31}, {31,16,16,30,16,16,16},
-  {14,17,16,23,17,17,15}, {17,17,17,31,17,17,17},
-  {14,4,4,4,4,4,14}, {7,2,2,2,18,18,12},
-  {17,18,20,24,20,18,17}, {16,16,16,16,16,16,31},
-  {17,27,21,21,17,17,17}, {17,25,21,19,17,17,17},
-  {14,17,17,17,17,17,14}, {30,17,17,30,16,16,16},
-  {14,17,17,17,21,18,13}, {30,17,17,30,20,18,17},
-  {15,16,16,14,1,1,30}, {31,4,4,4,4,4,4},
-  {17,17,17,17,17,17,14}, {17,17,17,17,17,10,4},
-  {17,17,17,21,21,21,10}, {17,17,10,4,10,17,17},
-  {17,17,10,4,4,4,4}, {31,1,2,4,8,16,31}
-};
-
-/* Original 12x18 menu symbols share the one-bit text font. Thin strokes
- * remain two panel pixels wide with global 2x zoom. No bitmap upload is
- * needed when changing pages; text and symbols are cached together.
+/* The font is rasterized from the bundled OFL Roboto Condensed source.
+ * Native 12x18, two-bit glyphs retain four coverage levels before 2x zoom.
+ * Four original 24x36 icons use four consecutive character cells each.
  */
 enum {
-  GLYPH_HORIZONTAL = 59, GLYPH_VERTICAL, GLYPH_TOP_LEFT, GLYPH_TOP_RIGHT,
+  GLYPH_ICON = MENU_FONT_COUNT,
+  GLYPH_HORIZONTAL = GLYPH_ICON + MENU_ICON_COUNT * MENU_ICON_GLYPHS,
+  GLYPH_VERTICAL, GLYPH_TOP_LEFT, GLYPH_TOP_RIGHT,
   GLYPH_BOTTOM_LEFT, GLYPH_BOTTOM_RIGHT, GLYPH_JOIN_LEFT, GLYPH_JOIN_RIGHT,
-  GLYPH_SELECT, GLYPH_BACK, GLYPH_PICTURE, GLYPH_AUDIO, GLYPH_DISPLAY,
-  GLYPH_SETTINGS, GLYPH_POWER, GLYPH_HOME, TEXT_GLYPHS
+  GLYPH_SELECT, GLYPH_BACK, GLYPH_HOME, TEXT_GLYPHS
 };
 
 static uint16_t menu_scanline(uint8_t glyph, uint8_t y) {
-  static const OSD_CODE uint16_t icons[6][18] = {
-    /* Picture: framed mountain and sun. */
-    {0,0,0x7fe,0x402,0x462,0x462,0x402,0x442,0x4e2,
-     0x5f2,0x7ba,0x712,0x602,0x402,0x7fe,0,0,0},
-    /* Audio: speaker cone and two sound waves. */
-    {0,0,0,0x040,0x0c4,0x1c2,0x7d2,0x7d1,0x7d1,
-     0x7d1,0x7d2,0x1c2,0x0c4,0x040,0,0,0,0},
-    /* Display: monitor and pedestal. */
-    {0,0,0x7fe,0x402,0x402,0x402,0x402,0x402,0x402,
-     0x402,0x7fe,0x060,0x060,0x1f8,0,0,0,0},
-    /* Settings: three slider tracks with staggered handles. */
-    {0,0,0,0x180,0x7fe,0x180,0,0,0x030,
-     0x7fe,0x030,0,0,0x0c0,0x7fe,0x0c0,0,0},
-    /* Power: interrupted circle with a vertical switch mark. */
-    {0,0,0x060,0x060,0x264,0x462,0x462,0x462,0x402,
-     0x402,0x402,0x204,0x108,0x0f0,0,0,0,0},
-    /* Home: four menu tiles. */
-    {0,0,0x79e,0x492,0x492,0x492,0x79e,0,0,
-     0x79e,0x492,0x492,0x492,0x79e,0,0,0,0}
-  };
   uint8_t offset;
-  if (glyph >= GLYPH_PICTURE && glyph <= GLYPH_HOME)
-    return icons[glyph - GLYPH_PICTURE][y];
   switch (glyph) {
   case GLYPH_HORIZONTAL: return y == 8 ? 0xfff : 0;
   case GLYPH_VERTICAL: return 0x040;
@@ -260,60 +219,83 @@ static uint16_t menu_scanline(uint8_t glyph, uint8_t y) {
     if (y < 4 || y > 12) return 0;
     offset = y <= 8 ? 8 - y : y - 8;
     return 0x300 >> offset;
+  case GLYPH_HOME:
+    if ((y >= 3 && y <= 7) || (y >= 10 && y <= 14))
+      return y == 3 || y == 7 || y == 10 || y == 14 ? 0x79e : 0x492;
+    return 0;
   default: return 0;
   }
-}
-
-static uint16_t text_scanline(uint8_t character, uint8_t y) {
-  uint8_t bits = 0, x;
-  uint16_t pixels = 0;
-  if (character > 'Z') return menu_scanline(character - ' ', y);
-  if (y < 2 || y >= 16) {
-    return 0;
-  }
-  y = (y - 2) / 2;
-  if (character >= '0' && character <= '9') {
-    bits = text_font[character - '0'][y];
-  } else if (character >= 'A' && character <= 'Z') {
-    bits = text_font[character - 'A' + 10][y];
-  } else if (character == '-' && y == 3) {
-    bits = 31;
-  } else if (character == '+') {
-    bits = y == 3 ? 31 : (y >= 1 && y <= 5 ? 4 : 0);
-  } else if (character == '.' && y == 6) {
-    bits = 4;
-  } else if (character == ':' && (y == 2 || y == 5)) {
-    bits = 4;
-  } else if (character == '/') {
-    bits = 1u << (y * 4 / 6);
-  } else if (character == '%') {
-    static const OSD_CODE uint8_t percent[7] = {25,26,2,4,8,11,19};
-    bits = percent[y];
-  }
-  for (x = 0; x < 5; ++x) {
-    if (bits & (16u >> x)) {
-      pixels |= 3u << (9 - x * 2);
-    }
-  }
-  return pixels;
 }
 
 #define TEXT_COLUMNS 30
 #define TEXT_ROWS 5
 #define MENU_ROWS 7
-#define LIVE_MENU_ROWS 10
+#define LIVE_MENU_ROWS 12
+_Static_assert(MENU_FONT_WIDTH == 12 && MENU_FONT_HEIGHT == 18 &&
+               MENU_FONT_BYTES == 54 && MENU_ICON_BYTES == 54,
+               "Text renderer requires 12x18 two-bit glyphs");
+_Static_assert(OSD_MAP_BASE + TEXT_COLUMNS * LIVE_MENU_ROWS <= OSD_FONT_BASE &&
+               OSD_FONT_BASE + TEXT_GLYPHS * 18 <= 0xf00,
+               "Menu map and fonts must fit without overlap");
 static uint8_t text_row, text_column, text_color;
+static uint8_t menu_slider, menu_slider_value;
+
+/* Colors 0..7 are opaque foreground/background choices (except zero).
+ * Colors 8..15 are the two intermediate coverages for four color pairs.
+ * The two AA colors share their high palette bit, as required by p397.
+ */
+static const OSD_CODE uint8_t menu_palette[16][3] = {
+  {0,0,0}, {232,238,246}, {12,20,36}, {24,84,148},
+  {72,216,192}, {132,148,168}, {52,76,104}, {12,20,36},
+  {85,93,106}, {159,165,176}, {93,135,181}, {163,187,213},
+  {52,63,80}, {92,105,124}, {32,85,88}, {52,151,140}
+};
+static const OSD_CODE uint8_t diagnostic_palette[16][3] = {
+  {0,0,0}, {255,255,255}, {0,0,0}, {16,64,160},
+  {0,220,120}, {96,96,96}, {52,76,104}, {0,0,0},
+  {85,85,85}, {170,170,170}, {96,128,192}, {175,191,223},
+  {32,32,32}, {64,64,64}, {0,73,40}, {0,147,80}
+};
+
+static void text_palette(uint8_t menu) {
+  const OSD_CODE uint8_t *colors = menu ? &menu_palette[0][0] :
+                                        &diagnostic_palette[0][0];
+  uint8_t i;
+  rtd_write(0, 0x6e, 0x80);
+  for (i = 0; i < 48; ++i) rtd_write(0, 0x6f, colors[i]);
+  rtd_write(0, 0x6e, 0);
+}
 
 static void text_glyph(uint8_t glyph) {
+  uint8_t fg = text_color >> 4, bg = text_color & 15;
+  uint8_t aa1 = 8, aa2;
+  if (bg == 3) aa1 = 10;
+  else if (fg == 5) aa1 = 12;
+  else if (fg == 4) aa1 = 14;
+  aa2 = aa1 + 1;
+  if (bg == 3 && fg == 5) {
+    /* Disabled selected rows have no dedicated palette pair. Use their
+     * exact endpoints for intermediate pixels instead of a dark halo. */
+    aa1 = bg;
+    aa2 = fg;
+  }
   if (text_column < TEXT_COLUMNS) {
+    /* 2-bpp map: bit7+bit5 enable the mode; four palette indices map
+     * the low-bit-first font planes to background, AA1, AA2, foreground.
+     * Foreground/background must share their palette high bit.
+     */
     write_word(OSD_SRAM | (OSD_MAP_BASE + text_row * TEXT_COLUMNS +
-                           text_column++), 0x8c, glyph, text_color);
+                           text_column++),
+               0xa0 | ((fg & 8) << 3) | ((aa1 & 8) << 1) |
+               ((fg & 7) << 1) | ((bg & 4) >> 2), glyph,
+               ((bg & 3) << 6) | ((aa2 & 7) << 3) | (aa1 & 7));
   }
 }
 
 static void text_put(char character) {
-  if (character < ' ' || character > 'Z') character = ' ';
-  text_glyph(character - ' ');
+  if (character < MENU_FONT_FIRST || character >= MENU_FONT_FIRST + MENU_FONT_COUNT)
+    character = ' ';
+  text_glyph(character - MENU_FONT_FIRST);
 }
 
 static void text_literal(const char *text) {
@@ -377,8 +359,9 @@ static void text_geometry(const video_signal_t *signal) {
 }
 
 static void text_begin(uint8_t rows) {
-  uint8_t row, character, y;
+  uint8_t row, glyph, y, plane, byte;
   uint16_t top, bottom;
+  const OSD_CODE uint8_t *data;
   osd_hide();
   write_word(5, 0, 0, 0);
   write_word(8, 0, 0, 0);
@@ -392,24 +375,30 @@ static void text_begin(uint8_t rows) {
   write_word(OSD_SRAM | rows, 0, 0, 0);
   if (!text_loaded) {
     select_word(OSD_ALL_BYTES | OSD_SRAM | OSD_FONT_BASE);
-    for (character = ' '; character < ' ' + TEXT_GLYPHS; ++character) {
-      for (y = 0; y < 18; y += 2) {
-        top = text_scanline(character, y);
-        bottom = text_scanline(character, y + 1);
-        rtd_write(0, 0x92, (uint8_t)bottom);
-        rtd_write(0, 0x92, (uint8_t)((top << 4) | (bottom >> 8)));
-        rtd_write(0, 0x92, (uint8_t)(top >> 4));
+    for (glyph = 0; glyph < GLYPH_HORIZONTAL; ++glyph) {
+      if (glyph < MENU_FONT_COUNT) data = menu_font[glyph];
+      else data = menu_icons[(glyph - GLYPH_ICON) / 4][(glyph - GLYPH_ICON) % 4];
+      for (byte = 0; byte < MENU_FONT_BYTES; ++byte) {
+        rtd_write(0, 0x92, data[byte]);
+        if (byte == 26 || byte == 53) ddcci_service();
       }
-      ddcci_service(); /* The complete 27-byte glyph is now in SRAM. */
+    }
+    for (; glyph < TEXT_GLYPHS; ++glyph) {
+      /* Both planes carry the same binary rules/arrows: coverage 0 or 3. */
+      for (plane = 0; plane < 2; ++plane) {
+        for (y = 0; y < 18; y += 2) {
+          top = menu_scanline(glyph, y);
+          bottom = menu_scanline(glyph, y + 1);
+          rtd_write(0, 0x92, (uint8_t)bottom);
+          rtd_write(0, 0x92, (uint8_t)((top << 4) | (bottom >> 8)));
+          rtd_write(0, 0x92, (uint8_t)(top >> 4));
+        }
+        ddcci_service();
+      }
     }
     text_loaded = 1;
   }
-  /* Index zero remains transparent; index two is opaque black. */
-  rtd_write(0, 0x6e, 0x80);
-  for (character = 0; character < 9; ++character) {
-    rtd_write(0, 0x6f, character >= 3 && character < 6 ? 255 : 0);
-  }
-  rtd_write(0, 0x6e, 0);
+  text_palette(0);
   text_row = text_column = 0;
   text_color = 0x12;
 }
@@ -596,15 +585,9 @@ void osd_show_menu_preview(uint8_t page, uint8_t variant) {
   show_bitmap();
 }
 
-static void menu_edge(void) {
-  text_color = 0x62;
-  text_glyph(GLYPH_VERTICAL);
-}
-
-static void menu_finish_row(void) {
-  while (text_column < TEXT_COLUMNS - 1) text_put(' ');
-  menu_edge();
-  text_next_row();
+static void menu_position(uint8_t row, uint8_t column) {
+  text_row = row;
+  text_column = column;
 }
 
 static void menu_rule(uint8_t left, uint8_t right) {
@@ -615,42 +598,60 @@ static void menu_rule(uint8_t left, uint8_t right) {
   text_next_row();
 }
 
-static uint8_t menu_icon(const char *title) {
-  if (title[0] == 'P' || title[0] == 'N') return GLYPH_PICTURE;
-  if (title[0] == 'A' && title[1] == 'U') return GLYPH_AUDIO;
-  if (title[0] == 'D') return GLYPH_DISPLAY;
-  if (title[0] == 'M') return GLYPH_SETTINGS;
-  return GLYPH_HOME;
-}
-
-void osd_menu_begin(const char *title) {
-  static const OSD_CODE uint8_t colors[][3] = {
-    {12,20,36}, {24,84,148}, {72,216,192},
-    {132,148,168}, {52,76,104}, {20,36,56}
-  };
-  uint8_t color, channel;
+void osd_menu_begin(const char *title, uint8_t tab, uint8_t rail_focus) {
+  uint8_t row, icon, half;
+  if (tab >= MENU_ICON_COUNT) tab = 0;
   text_begin(LIVE_MENU_ROWS);
-  rtd_write(0, 0x6e, 0x86);
-  for (color = 0; color < 6; ++color)
-    for (channel = 0; channel < 3; ++channel)
-      rtd_write(0, 0x6f, colors[color][channel]);
-  rtd_write(0, 0x6e, 0);
+  text_palette(1);
+  menu_slider = 0;
   menu_rule(GLYPH_TOP_LEFT, GLYPH_TOP_RIGHT);
-  menu_edge();
-  text_color = 0x47;
-  text_glyph(menu_icon(title));
-  text_put(' ');
-  text_color = 0x17;
+  /* Clear every cell so shorter pages cannot leave stale text or colors. */
+  for (row = 1; row < LIVE_MENU_ROWS - 1; ++row) {
+    text_color = 0x62;
+    text_glyph(GLYPH_VERTICAL);
+    text_color = 0x12;
+    while (text_column < TEXT_COLUMNS - 1) text_put(' ');
+    text_color = 0x62;
+    text_glyph(GLYPH_VERTICAL);
+    text_next_row();
+  }
+  menu_rule(GLYPH_BOTTOM_LEFT, GLYPH_BOTTOM_RIGHT);
+  menu_position(1, 2);
+  text_color = 0x42;
+  text_glyph(GLYPH_HOME);
+  menu_position(1, 7);
+  text_color = 0x12;
   while (*title && text_column < TEXT_COLUMNS - 1) text_put(*title++);
-  menu_finish_row();
+  menu_position(2, 0);
   menu_rule(GLYPH_JOIN_LEFT, GLYPH_JOIN_RIGHT);
+
+  for (icon = 0; icon < MENU_ICON_COUNT; ++icon) {
+    for (half = 0; half < 2; ++half) {
+      menu_position(3 + icon * 2 + half, 1);
+      text_color = icon == tab && rail_focus ? 0x13 :
+                   icon == tab ? 0x42 : 0x52;
+      text_put(' ');
+      text_glyph(GLYPH_ICON + icon * 4 + half * 2);
+      text_glyph(GLYPH_ICON + icon * 4 + half * 2 + 1);
+      text_put(' ');
+      text_color = 0x62;
+      text_glyph(GLYPH_VERTICAL);
+      if (icon == tab && !rail_focus) {
+        menu_position(3 + icon * 2 + half, 1);
+        text_color = 0x42;
+        text_glyph(GLYPH_VERTICAL);
+      }
+    }
+  }
+  /* The caller fills only the right pane. Navigation never erases the rail. */
+  menu_position(3, 6);
 }
 
 void osd_menu_row(const char *label, const char *choice, uint8_t value,
                   uint8_t percent, uint8_t selected, uint8_t available) {
   uint8_t length = 0, start, background = selected ? 3 : 2;
   const char *cursor;
-  if (text_row >= LIVE_MENU_ROWS - 2) return;
+  if (text_row >= 8) return;
   if (!available) choice = "--";
   if (choice) {
     for (cursor = choice; *cursor && length < 7; ++cursor) ++length;
@@ -658,13 +659,11 @@ void osd_menu_row(const char *label, const char *choice, uint8_t value,
     length = (value >= 100 ? 3 : value >= 10 ? 2 : 1) + (percent != 0);
   }
   start = TEXT_COLUMNS - 1 - length;
-  menu_edge();
   text_color = 0x10 | background;
   if (selected) text_glyph(GLYPH_SELECT);
   else text_put(' ');
-  text_put(' ');
   text_color = (available ? 0x10 : 0x50) | background;
-  while (*label && text_column < 22) text_put(*label++);
+  while (*label && text_column < start - (length != 0)) text_put(*label++);
   while (text_column < start) text_put(' ');
   if (choice) {
     while (*choice && text_column < TEXT_COLUMNS - 1) text_put(*choice++);
@@ -672,21 +671,26 @@ void osd_menu_row(const char *label, const char *choice, uint8_t value,
     text_number(value);
     if (percent) text_put('%');
   }
-  menu_finish_row();
+  if (selected && available && percent && !choice) {
+    menu_slider = 1;
+    menu_slider_value = value > 100 ? 100 : value;
+  }
+  ++text_row;
+  text_column = 6;
 }
 
 void osd_menu_end(const char *footer) {
-  while (text_row < LIVE_MENU_ROWS - 2) {
-    menu_edge();
-    text_color = 0x12;
-    menu_finish_row();
+  uint8_t cell;
+  if (menu_slider) {
+    menu_position(9, 7);
+    for (cell = 0; cell < 20; ++cell) {
+      text_color = cell < menu_slider_value / 5 ? 0x42 : 0x62;
+      text_glyph(GLYPH_HORIZONTAL);
+    }
   }
-  menu_edge();
+  menu_position(10, 7);
   text_color = footer[0] == 'A' ? 0x42 : 0x52;
-  text_put(' ');
   while (*footer && text_column < TEXT_COLUMNS - 1) text_put(*footer++);
-  menu_finish_row();
-  menu_rule(GLYPH_BOTTOM_LEFT, GLYPH_BOTTOM_RIGHT);
   active_width = TEXT_COLUMNS * 24u;
   active_height = LIVE_MENU_ROWS * 36u;
   show_bitmap();

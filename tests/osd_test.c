@@ -13,9 +13,22 @@
 #define OSD_CODE
 #include "splash_bitmap.h"
 #include "no_signal_bitmap.h"
+#include "rtd/menu_font.h"
+#include "rtd/menu_icons.h"
 
-#define FONT_BASE 0x140
-#define FONT_COUNT 75
+#define FONT_BASE 0x180
+#define FONT_COUNT 122
+#define FONT_WORDS 18
+#define ICON_BASE 95
+#define GLYPH_HORIZONTAL 111
+#define GLYPH_VERTICAL 112
+#define GLYPH_TOP_LEFT 113
+#define GLYPH_TOP_RIGHT 114
+#define GLYPH_BOTTOM_LEFT 115
+#define GLYPH_BOTTOM_RIGHT 116
+#define GLYPH_JOIN_LEFT 117
+#define GLYPH_JOIN_RIGHT 118
+#define GLYPH_SELECT 119
 
 /* Model the documented three byte lanes and auto-incrementing word port,
  * independently of the driver's bitmap packing code. */
@@ -24,7 +37,7 @@ static uint8_t written[4096][3], palette[48];
 static uint16_t address;
 static unsigned lane, palette_bytes, palette_index;
 static uint16_t runtime_vstart = 32;
-static uint8_t font_snapshot[FONT_COUNT * 9][3];
+static uint8_t font_snapshot[FONT_COUNT * FONT_WORDS][3];
 static unsigned font_cached, font_seen;
 static unsigned writes_since_poll, ddcci_polls, upload_polls;
 static const char *preview_path;
@@ -53,6 +66,7 @@ void rtd_write(uint8_t page, uint8_t reg, uint8_t value) {
     assert(!(regs[0x93] & 0x08));       /* Lower SRAM bank. */
     word = address & 0x0fff;
     if (address & 0x1000) {
+      assert(word < 0xf00); /* Manual p358: last implemented word is 0xEFF. */
       sram[word][lane] = value;
       written[word][lane] = 1;
     } else {
@@ -127,7 +141,7 @@ static void check_asset(void (*show)(void), const char *name,
   assert(fonts == FONT_BASE);
   assert(rows + 1 <= map);
   assert(map + rows * columns <= fonts);
-  assert(fonts + rows * columns * 9 * bpp <= 4096);
+  assert(fonts + rows * columns * 9 * bpp <= 0xf00);
   assert(rows * columns <= (bpp == 4 ? 128 : 256));
   for (row = 0; row < rows; ++row) {
     assert(sram[row][0] == 0x83); /* Enabled, row width/height both 2x. */
@@ -200,22 +214,81 @@ static void check_asset(void (*show)(void), const char *name,
 }
 
 static unsigned glyph_pixel(unsigned glyph, unsigned x, unsigned y) {
-  unsigned word = FONT_BASE + glyph * 9 + y / 2;
-  uint32_t pixels = (uint32_t)sram[word][0] |
-                    ((uint32_t)sram[word][1] << 8) |
-                    ((uint32_t)sram[word][2] << 16);
-  return (pixels >> ((y % 2 ? 11 : 23) - x)) & 1;
+  unsigned plane, coverage = 0;
+  assert(glyph < FONT_COUNT && x < 12 && y < 18);
+  for (plane = 0; plane < 2; ++plane) {
+    unsigned word = FONT_BASE + glyph * FONT_WORDS + plane * 9 + y / 2;
+    uint32_t pixels = (uint32_t)sram[word][0] |
+                      ((uint32_t)sram[word][1] << 8) |
+                      ((uint32_t)sram[word][2] << 16);
+    coverage |= ((pixels >> ((y % 2 ? 11 : 23) - x)) & 1) << plane;
+  }
+  return coverage;
+}
+
+/* Manual pp396-397: four palette selectors spread across both command bytes.
+ * Pixel00/11 share one MSB, and pixel01/10 share another. */
+static unsigned text_color(unsigned entry, unsigned coverage) {
+  unsigned command = sram[entry][0], colors = sram[entry][2];
+  assert((command & 0xa0) == 0xa0 && coverage < 4);
+  if (coverage == 0)
+    return ((command >> 3) & 8) | ((command & 1) << 2) | (colors >> 6);
+  if (coverage == 1) return ((command >> 1) & 8) | (colors & 7);
+  if (coverage == 2) return ((command >> 1) & 8) | ((colors >> 3) & 7);
+  return ((command >> 3) & 8) | ((command >> 1) & 7);
+}
+
+static void check_color(unsigned entry, unsigned foreground, unsigned background) {
+  unsigned first = 0;
+  assert(text_color(entry, 0) == background);
+  assert(text_color(entry, 3) == foreground);
+  assert(background != 0 && background != 8); /* Both are transparent in 2bpp. */
+  if (foreground == 1 && background == 2) first = 8;
+  else if (foreground == 1 && background == 3) first = 10;
+  else if (foreground == 5 && background == 2) first = 12;
+  else if (foreground == 4 && background == 2) first = 14;
+  if (first) {
+    assert(text_color(entry, 1) == first && text_color(entry, 2) == first + 1);
+  } else if (foreground == 5 && background == 3) {
+    /* No palette pair is reserved for selected disabled text. */
+    assert(text_color(entry, 1) == 3 && text_color(entry, 2) == 5);
+  }
+}
+
+static void check_text_font(void) {
+  unsigned glyph, byte, x, y, levels[4] = {0}, differing_rows = 0;
+  for (glyph = 0; glyph < MENU_FONT_COUNT + MENU_ICON_COUNT * MENU_ICON_GLYPHS;
+       ++glyph) {
+    const uint8_t *source = glyph < MENU_FONT_COUNT ? menu_font[glyph] :
+        menu_icons[(glyph - ICON_BASE) / 4][(glyph - ICON_BASE) % 4];
+    for (byte = 0; byte < 54; ++byte)
+      assert(sram[FONT_BASE + glyph * FONT_WORDS + byte / 3][byte % 3] == source[byte]);
+  }
+  for (glyph = 0; glyph < FONT_COUNT; ++glyph) {
+    unsigned ink = 0;
+    for (y = 0; y < 18; ++y) {
+      for (x = 0; x < 12; ++x) {
+        unsigned pixel = glyph_pixel(glyph, x, y);
+        ++levels[pixel];
+        ink += pixel;
+        if (!(y & 1) && pixel != glyph_pixel(glyph, x, y + 1)) ++differing_rows;
+      }
+    }
+    assert(glyph == 0 ? ink == 0 : ink > 0);
+  }
+  assert(levels[1] && levels[2] && levels[3] && differing_rows);
+  assert(memcmp(menu_font['A' - 32], menu_font['a' - 32], MENU_FONT_BYTES));
 }
 
 static void check_text_writes(unsigned rows) {
   unsigned word, byte;
   assert(!writes_since_poll);
   assert(rows + 1 <= 0x10 && 0x10 + rows * 30 <= FONT_BASE);
-  assert(FONT_BASE + FONT_COUNT * 9 <= 4096);
+  assert(FONT_BASE + FONT_COUNT * FONT_WORDS <= 0xf00);
   for (word = 0; word < 4096; ++word) {
     unsigned used = word <= rows ||
         (word >= 0x10 && word < 0x10 + rows * 30) ||
-        (!font_cached && word >= FONT_BASE && word < FONT_BASE + FONT_COUNT * 9);
+        (!font_cached && word >= FONT_BASE && word < FONT_BASE + FONT_COUNT * FONT_WORDS);
     for (byte = 0; byte < 3; ++byte) assert(written[word][byte] == used);
   }
   /* Both cached glyphs and uploads after bitmap use must exactly match the
@@ -226,17 +299,18 @@ static void check_text_writes(unsigned rows) {
     font_seen = 1;
   }
   font_cached = 1;
+  check_text_font();
 }
 
 static void check_input(const video_signal_t *signal,
                         const char *const expected[5], char text[5][31]) {
-  unsigned row, column, glyph, x, y, ink, x_delay, y_delay;
+  unsigned row, column, x_delay, y_delay;
   memset(written, 0, sizeof(written));
   palette_bytes = 0;
   osd_show_input(signal);
   assert((regs[0x6c] & 1) && (frame[0][2] & 1));
   assert(frame[3][1] == 3);
-  assert(frame[4][0] == 0x10 && frame[4][1] == 0 && frame[4][2] == 0x14);
+  assert(frame[4][0] == 0x10 && frame[4][1] == 0 && frame[4][2] == 0x18);
   assert(palette_bytes >= 9 && !(regs[0x6e] & 0x80));
   for (column = 0; column < 3; ++column) {
     assert(palette[3 + column] == 255); /* White on opaque black. */
@@ -246,8 +320,8 @@ static void check_input(const video_signal_t *signal,
     assert(sram[row][0] == 0x80 && sram[row][1] == 0x88 && sram[row][2] == 30);
     for (column = 0; column < 30; ++column) {
       unsigned entry = 0x10 + row * 30 + column;
-      assert(sram[entry][0] == 0x8c && sram[entry][2] == 0x12);
-      assert(sram[entry][1] < 59);
+      check_color(entry, 1, 2);
+      assert(sram[entry][1] < MENU_FONT_COUNT);
       text[row][column] = (char)(sram[entry][1] + 32);
       if (expected && expected[row]) {
         char wanted = column < strlen(expected[row]) ? expected[row][column] : ' ';
@@ -258,28 +332,6 @@ static void check_input(const video_signal_t *signal,
   }
   assert(sram[5][0] == 0 && sram[5][1] == 0 && sram[5][2] == 0);
   check_text_writes(5);
-  /* Font geometry is independently decoded from SRAM: blank space, one
-   * pixel side margins, two line top/bottom margins and doubled 5x7 pixels. */
-  for (glyph = 0; glyph < 59; ++glyph) {
-    ink = 0;
-    for (y = 0; y < 18; ++y) {
-      for (x = 0; x < 12; ++x) {
-        unsigned pixel = glyph_pixel(glyph, x, y);
-        ink += pixel;
-        if (x == 0 || x == 11 || y < 2 || y >= 16) {
-          assert(pixel == 0);
-        } else {
-          assert(pixel == glyph_pixel(glyph, 1 + ((x - 1) / 2) * 2,
-                                     2 + ((y - 2) / 2) * 2));
-        }
-      }
-    }
-    if (glyph == 0) {
-      assert(ink == 0);
-    } else if (glyph == 'A' - 32 || glyph == '%' - 32 || (glyph >= '0' - 32 && glyph <= '9' - 32)) {
-      assert(ink > 0);
-    }
-  }
   x_delay = ((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6);
   y_delay = ((unsigned)frame[0][0] << 3) | ((frame[0][2] >> 3) & 7);
   assert(x_delay == (panel.hstart + 16u - BOARD_OSD_X_CORRECTION) / 8u);
@@ -391,17 +443,14 @@ static void check_menu_preview(void) {
       osd_show_menu_preview(page, variant);
       check_text_writes(7);
       assert((regs[0x6c] & 1) && (frame[0][2] & 1));
-      assert(palette_bytes == 18 && frame[3][1] == 3);
-      assert(palette[9] == 16 && palette[10] == 64 && palette[11] == 160);
-      assert(palette[12] == 0 && palette[13] == 220 && palette[14] == 120);
-      assert(palette[15] == 96 && palette[16] == 96 && palette[17] == 96);
+      assert(palette_bytes >= 48 && frame[3][1] == 3);
       assert(0x10 + 7 * 30 <= FONT_BASE); /* Map cannot overwrite glyphs. */
       for (row = 0; row < 7; ++row) {
         assert(sram[row][0] == 0x80 && sram[row][1] == 0x88);
         assert(sram[row][2] == 30);
         for (column = 0; column < 30; ++column) {
           unsigned entry = 0x10 + row * 30 + column;
-          assert(sram[entry][0] == 0x8c && sram[entry][1] < 59);
+          assert((sram[entry][0] & 0xa0) == 0xa0 && sram[entry][1] < MENU_FONT_COUNT);
           text[row][column] = (char)(sram[entry][1] + 32);
         }
         text[row][30] = '\0';
@@ -409,7 +458,7 @@ static void check_menu_preview(void) {
       assert(sram[7][0] == 0 && sram[7][1] == 0 && sram[7][2] == 0);
       assert(strncmp(text[0], titles[page], strlen(titles[page])) == 0);
       assert(strncmp(text[1] + 1, first[page], strlen(first[page])) == 0);
-      assert(sram[0x10][2] == 0x42);
+      check_color(0x10, 4, 2);
       if (page == OSD_PREVIEW_MAIN) {
         assert(strstr(text[6], "SAMPLE VALUES - NO CHANGES"));
         row = variant == 2 ? 4 : variant + 1;
@@ -423,11 +472,11 @@ static void check_menu_preview(void) {
           assert(strstr(text[1], variant == 0 ? "0%" : variant == 1 ? "50%" : "100%"));
         }
       }
-      assert(sram[0x10 + row * 30][2] == 0x13);
+      check_color(0x10 + row * 30, 1, 3);
       for (column = 1; column < 7; ++column) {
         unsigned color = column == row ? 0x13 : 0x12;
         if (page == OSD_PREVIEW_MAIN && column == 6) color = 0x52;
-        assert(sram[0x10 + column * 30][2] == color);
+        check_color(0x10 + column * 30, color >> 4, color & 15);
       }
       /* Decode slider tracks independently: exactly 0, 10 or 20 filled cells. */
       if (page != OSD_PREVIEW_MAIN) {
@@ -436,8 +485,8 @@ static void check_menu_preview(void) {
         for (column = 2; column < 22; ++column) {
           unsigned entry = 0x10 + track_row * 30 + column;
           assert(sram[entry][1] == 0); /* Blank glyph with opaque cell color. */
-          assert(sram[entry][2] == 0x14 || sram[entry][2] == 0x15);
-          filled += sram[entry][2] == 0x14;
+          assert(text_color(entry, 0) == 4 || text_color(entry, 0) == 5);
+          filled += text_color(entry, 0) == 4;
         }
         assert(filled == variant * 10);
       }
@@ -448,8 +497,8 @@ static void check_menu_preview(void) {
       if (page == OSD_PREVIEW_DISPLAY) {
         assert(strstr(text[3], variant == 1 ? "FILL" : "KEEP"));
         assert(strstr(text[4], "--") && strstr(text[5], "--"));
-        assert(sram[0x10 + 4 * 30 + 22][2] == 0x52);
-        assert(sram[0x10 + 5 * 30 + 22][2] == 0x52);
+        check_color(0x10 + 4 * 30 + 22, 5, 2);
+        check_color(0x10 + 5 * 30 + 22, 5, 2);
       }
       x_delay = ((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6);
       y_delay = ((unsigned)frame[0][0] << 3) | ((frame[0][2] >> 3) & 7);
@@ -460,32 +509,13 @@ static void check_menu_preview(void) {
   puts("OSD all submenu pages, slider limits, selections and centering passed");
 }
 
-static void check_menu_glyphs(void) {
-  unsigned glyph, x, y, ink;
-  for (glyph = 59; glyph < FONT_COUNT; ++glyph) {
-    ink = 0;
-    for (y = 0; y < 18; ++y) {
-      for (x = 0; x < 12; ++x) {
-        unsigned expected = 0, pixel = glyph_pixel(glyph, x, y);
-        ink += pixel;
-        if (glyph == 59) expected = y == 8;
-        else if (glyph == 60) expected = x == 5;
-        else if (glyph == 61) expected = (y == 8 && x >= 5) || (y > 8 && x == 5);
-        else if (glyph == 62) expected = (y == 8 && x <= 5) || (y > 8 && x == 5);
-        else if (glyph == 63) expected = (y == 8 && x >= 5) || (y < 8 && x == 5);
-        else if (glyph == 64) expected = (y == 8 && x <= 5) || (y < 8 && x == 5);
-        else if (glyph == 65) expected = x == 5 || (y == 8 && x >= 5);
-        else if (glyph == 66) expected = x == 5 || (y == 8 && x <= 5);
-        if (glyph <= 66) assert(pixel == expected);
-      }
-    }
-    assert(ink); /* Every extra glyph has visible artwork. */
-  }
-}
-
 /* Optional visual check of the bytes actually written to hardware SRAM. */
 static void export_live_menu(const char *scene) {
   unsigned x, y;
+  unsigned x_delay = ((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6);
+  unsigned y_delay = ((unsigned)frame[0][0] << 3) | ((frame[0][2] >> 3) & 7);
+  unsigned origin_x = x_delay * 8 + BOARD_OSD_X_CORRECTION - panel.hstart;
+  unsigned origin_y = y_delay * 2 - runtime_vstart;
   char filename[512];
   FILE *output;
   if (!preview_path) return;
@@ -498,12 +528,13 @@ static void export_live_menu(const char *scene) {
     for (x = 0; x < 800; ++x) {
       static const uint8_t black[3] = {0, 0, 0};
       const uint8_t *rgb = black;
-      if (x >= 40 && x < 760 && y >= 60 && y < 420) {
-        unsigned px = (x - 40) / 2, py = (y - 60) / 2;
+      if (x >= origin_x && x < origin_x + 720 &&
+          y >= origin_y && y < origin_y + 432) {
+        unsigned px = (x - origin_x) / 2, py = (y - origin_y) / 2;
         unsigned entry = 0x10 + (py / 18) * 30 + px / 12;
-        unsigned ink = glyph_pixel(sram[entry][1], px % 12, py % 18);
-        unsigned color = ink ? sram[entry][2] >> 4 : sram[entry][2] & 15;
-        rgb = &palette[color * 3];
+        unsigned coverage = glyph_pixel(sram[entry][1], px % 12, py % 18);
+        unsigned color = text_color(entry, coverage);
+        if (coverage || (color != 0 && color != 8)) rgb = &palette[color * 3];
       }
       assert(fwrite(rgb, 1, 3, output) == 3);
     }
@@ -511,117 +542,141 @@ static void export_live_menu(const char *scene) {
   assert(fclose(output) == 0);
 }
 
-static void check_live_menu(void) {
-  static const uint8_t expected_palette[][3] = {
-    {12, 20, 36}, {24, 84, 148}, {72, 216, 192},
-    {132, 148, 168}, {52, 76, 104}, {20, 36, 56}
-  };
-  unsigned pass, row, column, x_delay, y_delay;
-  char text[10][31];
-  for (pass = 0; pass < 2; ++pass) {
-    memset(written, 0, sizeof written);
-    palette_bytes = 0;
-    osd_menu_begin("LIVE MENU");
-    osd_menu_row("CONTRAST", NULL, pass ? 5 : 75, 1, !pass, 1);
-    osd_menu_row("ROTATION", NULL, 0, 0, pass, 0);
-    if (!pass) {
-      osd_menu_row("ASPECT", "KEEP", 0, 0, 0, 1);
-      osd_menu_row("MUTE", "OFF", 0, 0, 0, 1);
-      osd_menu_row("BACK", "", 0, 0, 0, 1);
-      osd_menu_row("MUST NOT FIT", "", 0, 0, 0, 1);
+static void check_live_frame(char text[12][31]) {
+  unsigned row, column;
+  unsigned x_delay = ((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6);
+  unsigned y_delay = ((unsigned)frame[0][0] << 3) | ((frame[0][2] >> 3) & 7);
+  check_text_writes(12);
+  assert((regs[0x6c] & 1) && (frame[0][2] & 1) && frame[3][1] == 3);
+  assert(palette_bytes >= 48 && !(regs[0x6e] & 0x80));
+  assert(x_delay * 8 + BOARD_OSD_X_CORRECTION - panel.hstart == 40);
+  assert(y_delay * 2 - runtime_vstart == 24);
+  for (row = 0; row < 12; ++row) {
+    assert(sram[row][0] == 0x80 && sram[row][1] == 0x88 && sram[row][2] == 30);
+    for (column = 0; column < 30; ++column) {
+      unsigned entry = 0x10 + row * 30 + column;
+      assert((sram[entry][0] & 0xa0) == 0xa0);
+      assert(sram[entry][1] < FONT_COUNT);
+      assert(text_color(entry, 0) != 0 && text_color(entry, 0) != 8);
+      text[row][column] = sram[entry][1] < MENU_FONT_COUNT ?
+          (char)(sram[entry][1] + 32) : '?';
     }
-    osd_menu_end(pass ? "ADJUST +/-" : "MENU SELECT");
-    check_text_writes(10);
-    check_menu_glyphs();
-    assert((regs[0x6c] & 1) && (frame[0][2] & 1));
-    assert(frame[3][1] == 3);
-    for (row = 0; row < 6; ++row)
-      for (column = 0; column < 3; ++column)
-        assert(palette[(row + 2) * 3 + column] == expected_palette[row][column]);
-    for (row = 0; row < 10; ++row) {
-      assert(sram[row][0] == 0x80 && sram[row][1] == 0x88 && sram[row][2] == 30);
-      for (column = 0; column < 30; ++column) {
-        unsigned entry = 0x10 + row * 30 + column;
-        assert(sram[entry][0] == 0x8c && sram[entry][1] < FONT_COUNT);
-        text[row][column] = sram[entry][1] < 59 ? (char)(sram[entry][1] + 32) : '?';
-      }
-      text[row][30] = 0;
-    }
-    assert(sram[10][0] == 0 && sram[10][1] == 0 && sram[10][2] == 0);
-    /* The entire border joins correctly, independent of label contents. */
-    for (row = 0; row < 10; ++row) {
-      unsigned first = 0x10 + row * 30;
-      unsigned left = row == 0 ? 61 : row == 2 ? 65 : row == 9 ? 63 : 60;
-      unsigned right = row == 0 ? 62 : row == 2 ? 66 : row == 9 ? 64 : 60;
-      assert(sram[first][1] == left && sram[first + 29][1] == right);
-      assert(sram[first][2] == 0x62 && sram[first + 29][2] == 0x62);
-      if (row == 0 || row == 2 || row == 9) {
-        for (column = 1; column < 29; ++column) {
-          assert(sram[first + column][1] == 59);
-          assert(sram[first + column][2] == 0x62);
-        }
-      }
-    }
-    assert(sram[0x10 + 30 + 1][1] == 74); /* Generic title gets home icon. */
-    assert(sram[0x10 + 30 + 1][2] == 0x47);
-    assert(!strncmp(text[1] + 3, "LIVE MENU", 9));
-    for (column = 3; column < 29; ++column)
-      assert(sram[0x10 + 30 + column][2] == 0x17);
-    assert(!strncmp(text[3] + 3, "CONTRAST", 8));
-    assert(!strncmp(text[3] + (pass ? 27 : 26), pass ? "5%" : "75%", pass ? 2 : 3));
-    assert(!strncmp(text[4] + 3, "ROTATION", 8));
-    assert(!strncmp(text[4] + 27, "--", 2));
-    for (row = 3; row <= 4; ++row) {
-      unsigned selected = row == (pass ? 4 : 3);
-      unsigned base = 0x10 + row * 30;
-      assert(sram[base + 1][1] == (selected ? 67 : 0));
-      for (column = 1; column < 29; ++column)
-        assert((sram[base + column][2] & 15) == (selected ? 3 : 2));
-    }
-    assert(sram[0x10 + 4 * 30 + 27][2] == (pass ? 0x53 : 0x52));
-    assert(!strncmp(text[8] + 2, pass ? "ADJUST +/-" : "MENU SELECT", pass ? 10 : 11));
-    assert(sram[0x10 + 8 * 30 + 2][2] == (pass ? 0x42 : 0x52));
-    if (pass) {
-      for (row = 5; row <= 7; ++row) {
-        for (column = 1; column < 29; ++column) {
-          assert(text[row][column] == ' ');
-          assert((sram[0x10 + row * 30 + column][2] & 15) == 2);
-        }
-      }
-    } else {
-      assert(!strncmp(text[7] + 3, "BACK", 4));
-      assert(!strstr(text[8], "MUST NOT FIT"));
-    }
-    x_delay = ((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6);
-    y_delay = ((unsigned)frame[0][0] << 3) | ((frame[0][2] >> 3) & 7);
-    assert(x_delay * 8 + BOARD_OSD_X_CORRECTION - panel.hstart == 40);
-    assert(y_delay * 2 - runtime_vstart == 60);
-    export_live_menu(pass ? "edit" : "live");
+    text[row][30] = 0;
   }
-  puts("OSD live menu borders, icons, colors, selections, stale cells and font cache passed");
+  assert(sram[12][0] == 0 && sram[12][1] == 0 && sram[12][2] == 0);
+  for (row = 0; row < 12; ++row) {
+    unsigned first = 0x10 + row * 30;
+    unsigned left = row == 0 ? GLYPH_TOP_LEFT : row == 2 ? GLYPH_JOIN_LEFT :
+                    row == 11 ? GLYPH_BOTTOM_LEFT : GLYPH_VERTICAL;
+    unsigned right = row == 0 ? GLYPH_TOP_RIGHT : row == 2 ? GLYPH_JOIN_RIGHT :
+                     row == 11 ? GLYPH_BOTTOM_RIGHT : GLYPH_VERTICAL;
+    assert(sram[first][1] == left && sram[first + 29][1] == right);
+    check_color(first, 6, 2);
+    check_color(first + 29, 6, 2);
+    if (row == 0 || row == 2 || row == 11) {
+      for (column = 1; column < 29; ++column)
+        assert(sram[first + column][1] == GLYPH_HORIZONTAL);
+    }
+    if (row >= 3 && row <= 10) assert(sram[first + 5][1] == GLYPH_VERTICAL);
+  }
+}
+
+static void check_rail(unsigned active, unsigned focused) {
+  unsigned tab, quadrant;
+  for (tab = 0; tab < 4; ++tab) {
+    for (quadrant = 0; quadrant < 4; ++quadrant) {
+      unsigned row = 3 + tab * 2 + quadrant / 2, column = 2 + quadrant % 2;
+      unsigned entry = 0x10 + row * 30 + column;
+      assert(sram[entry][1] == ICON_BASE + tab * 4 + quadrant);
+      /* Active category stays identifiable after focus moves into the pane. */
+      check_color(entry, tab == active ? (focused ? 1 : 4) : 5,
+                  tab == active && focused ? 3 : 2);
+    }
+  }
+}
+
+static void check_live_menu(void) {
+  unsigned tab, focused, pass, row, column;
+  char text[12][31], scene[32];
+  for (tab = 0; tab < 4; ++tab) {
+    for (focused = 0; focused < 2; ++focused) {
+      for (pass = 0; pass < 2; ++pass) {
+        memset(written, 0, sizeof written);
+        palette_bytes = 0;
+        osd_menu_begin("Live Menu", (uint8_t)tab, (uint8_t)focused);
+        osd_menu_row("Contrast", NULL, pass ? 5 : 75, 1, !focused && !pass, 1);
+        osd_menu_row("Rotation", NULL, 0, 0, !focused && pass, 0);
+        if (!pass) {
+          osd_menu_row("Aspect", "Keep", 0, 0, 0, 1);
+          osd_menu_row("Mute", "Off", 0, 0, 0, 1);
+          osd_menu_row("Back", "", 0, 0, 0, 1);
+          osd_menu_row("MUST NOT FIT", "", 0, 0, 0, 1);
+        }
+        osd_menu_end(pass ? "Adjust +/-" : "Menu select");
+        check_live_frame(text);
+        check_rail(tab, focused);
+        assert(!strncmp(text[1] + 7, "Live Menu", 9));
+        assert(!strncmp(text[3] + 7, "Contrast", 8));
+        assert(!strncmp(text[3] + (pass ? 27 : 26), pass ? "5%" : "75%", pass ? 2 : 3));
+        assert(!strncmp(text[4] + 7, "Rotation", 8));
+        assert(!strncmp(text[4] + 27, "--", 2));
+        for (row = 3; row <= 4; ++row) {
+          unsigned selected = !focused && row == (pass ? 4 : 3);
+          unsigned first = 0x10 + row * 30;
+          for (column = 6; column < 29; ++column)
+            assert(text_color(first + column, 0) == (selected ? 3 : 2));
+        }
+        check_color(0x10 + 4 * 30 + 27, 5, !focused && pass ? 3 : 2);
+        assert(!strncmp(text[10] + 7, pass ? "Adjust +/-" : "Menu select", pass ? 10 : 11));
+        for (column = 7; column < 27; ++column) {
+          unsigned entry = 0x10 + 9 * 30 + column;
+          if (!pass && !focused) {
+            assert(sram[entry][1] == GLYPH_HORIZONTAL);
+            check_color(entry, column - 7 < 15 ? 4 : 6, 2);
+          } else assert(sram[entry][1] == 0);
+        }
+        if (pass) {
+          for (row = 5; row <= 7; ++row) {
+            for (column = 6; column < 29; ++column) {
+              assert(text[row][column] == ' ');
+              assert(text_color(0x10 + row * 30 + column, 0) == 2);
+            }
+          }
+        } else {
+          assert(!strncmp(text[7] + 7, "Back", 4));
+          assert(!strstr(text[8], "MUST NOT FIT"));
+        }
+        snprintf(scene, sizeof scene, "tab%u-%s-%s", tab,
+                 focused ? "rail" : "pane", pass ? "short" : "full");
+        export_live_menu(scene);
+      }
+    }
+  }
+  puts("OSD 2bpp fonts, four icon rails, focus, bounds, stale cells and font cache passed");
 }
 
 static void export_page_examples(void) {
+  char text[12][31];
   if (!preview_path) return;
   memset(written, 0, sizeof written);
-  osd_menu_begin("PICTURE");
-  osd_menu_row("IMAGE BRIGHTNESS", NULL, 50, 1, 1, 1);
-  osd_menu_row("CONTRAST", NULL, 75, 1, 0, 1);
-  osd_menu_row("BACK", "", 0, 0, 0, 1);
-  osd_menu_end("MENU SELECT  BACK RETURN");
-  check_text_writes(10);
-  assert(sram[0x10 + 31][1] == 69);
+  palette_bytes = 0;
+  osd_menu_begin("Picture", 0, 0);
+  osd_menu_row("Image brightness", NULL, 50, 1, 1, 1);
+  osd_menu_row("Contrast", NULL, 75, 1, 0, 1);
+  osd_menu_row("Back", "", 0, 0, 0, 1);
+  osd_menu_end("Menu select / Back");
+  check_live_frame(text);
   export_live_menu("picture");
   memset(written, 0, sizeof written);
-  osd_menu_begin("DISPLAY");
-  osd_menu_row("LED BACKLIGHT", NULL, 0, 0, 0, 0);
-  osd_menu_row("ASPECT", "KEEP", 0, 0, 1, 1);
-  osd_menu_row("ROTATION", NULL, 0, 0, 0, 0);
-  osd_menu_row("MIRROR", NULL, 0, 0, 0, 0);
-  osd_menu_row("BACK", "", 0, 0, 0, 1);
-  osd_menu_end("ADJUST +/-  MENU TO FINISH");
-  check_text_writes(10);
-  assert(sram[0x10 + 31][1] == 71);
+  palette_bytes = 0;
+  osd_menu_begin("Display", 2, 0);
+  osd_menu_row("LED backlight", NULL, 0, 0, 0, 0);
+  osd_menu_row("Aspect", "Keep", 0, 0, 1, 1);
+  osd_menu_row("Rotation", NULL, 0, 0, 0, 0);
+  osd_menu_row("Mirror", NULL, 0, 0, 0, 0);
+  osd_menu_row("Back", "", 0, 0, 0, 1);
+  osd_menu_end("Adjust +/- / Menu");
+  check_live_frame(text);
   export_live_menu("display");
   preview_path = NULL;
 }

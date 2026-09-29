@@ -16,6 +16,8 @@ static uint32_t last_key;
 
 static uint8_t item_count(void) {
   switch (page) {
+  case MENU_MAIN:
+    return 4;
   case MENU_PICTURE:
   case MENU_AUDIO:
   case MENU_SIGNAL:
@@ -232,30 +234,26 @@ void control_key(uint8_t key) {
       page = MENU_SETTINGS;
       selection = 3;
     } else if (page != MENU_MAIN) {
+      selection = page - MENU_PICTURE;
       page = MENU_MAIN;
-      selection = 0;
     } else {
       page = 0;
       overlay_changed = 1;
       hide_requested = 1;
     }
   } else if (key == BOARD_KEY_MENU) {
-    if (selection == count - 1) {
+    if (page == MENU_MAIN) {
+      page = MENU_PICTURE + selection;
+      selection = 0;
+    } else if (selection == count - 1) {
       editing = 0;
-      if (page == MENU_MAIN) {
-        page = 0;
-        overlay_changed = 1;
-        hide_requested = 1;
-      } else if (page == MENU_SIGNAL) {
+      if (page == MENU_SIGNAL) {
         page = MENU_SETTINGS;
         selection = 3;
       } else {
+        selection = page - MENU_PICTURE;
         page = MENU_MAIN;
-        selection = 0;
       }
-    } else if (page == MENU_MAIN) {
-      page = MENU_PICTURE + selection;
-      selection = 0;
     } else if (page == MENU_SETTINGS && selection == 3) {
       page = MENU_SIGNAL;
       selection = 0;
@@ -287,88 +285,84 @@ static void row(const char *label, const char *choice, uint8_t code,
   uint16_t maximum = 0, value = 0;
   uint8_t available = code ? control_get(code, &maximum, &value) : choice != 0;
   osd_menu_row(label, choice, (uint8_t)value, maximum == 100,
-               selection == index, available);
+               page != MENU_MAIN && selection == index, available);
 }
 
 static void render(void) {
   const char *title;
-  switch (page) {
+  uint8_t shown_page = page == MENU_MAIN ? MENU_PICTURE + selection : page;
+  uint8_t tab = shown_page == MENU_SIGNAL ? 3 : shown_page - MENU_PICTURE;
+  switch (shown_page) {
   case MENU_PICTURE:
-    title = "PICTURE";
+    title = "Picture";
     break;
   case MENU_AUDIO:
-    title = "AUDIO";
+    title = "Audio";
     break;
   case MENU_DISPLAY:
-    title = "DISPLAY";
+    title = "Display";
     break;
   case MENU_SETTINGS:
-    title = "MENU SETTINGS";
+    title = "Menu settings";
     break;
   case MENU_SIGNAL:
-    title = "NO SIGNAL";
+    title = "No signal";
     break;
   default:
-    title = "ADAFRUIT MENU";
+    title = "Picture";
     break;
   }
-  osd_menu_begin(title);
-  switch (page) {
-  case MENU_MAIN:
-    row("PICTURE", "", 0, 0);
-    row("AUDIO", "", 0, 1);
-    row("DISPLAY", "", 0, 2);
-    row("MENU SETTINGS", "", 0, 3);
-    row("EXIT", "", 0, 4);
-    break;
+  osd_menu_begin(title, tab, page == MENU_MAIN);
+  switch (shown_page) {
   case MENU_PICTURE:
-    row("IMAGE BRIGHTNESS", 0, 0xe2, 0);
-    row("CONTRAST", 0, 0x12, 1);
-    row("BACK", "", 0, 2);
+    row("Image brightness", 0, 0xe2, 0);
+    row("Contrast", 0, 0x12, 1);
+    row("Back", "", 0, 2);
     break;
   case MENU_AUDIO:
-    row("VOLUME", 0, 0x62, 0);
-    row("MUTE", audio_get_mute() ? "ON" : "OFF", 0x8d, 1);
-    row("BACK", "", 0, 2);
+    row("Volume", 0, 0x62, 0);
+    row("Mute", audio_get_mute() ? "On" : "Off", 0x8d, 1);
+    row("Back", "", 0, 2);
     break;
   case MENU_DISPLAY:
-    row("LED BACKLIGHT", 0, 0x10, 0);
-    row("ASPECT", settings[SET_ASPECT] ? "FILL" : "KEEP", 0xe3, 1);
-    row("ROTATION", 0, 0, 2);
-    row("MIRROR", 0, 0, 3);
-    row("BACK", "", 0, 4);
+    row("LED backlight", 0, 0x10, 0);
+    row("Aspect", settings[SET_ASPECT] ? "Fill" : "Keep", 0xe3, 1);
+    row("Rotation", 0, 0, 2);
+    row("Mirror", 0, 0, 3);
+    row("Back", "", 0, 4);
     break;
   case MENU_SETTINGS:
-    row("STARTUP SPLASH", settings[SET_SPLASH] ? "ON" : "OFF", 0xe4, 0);
-    row("CONNECTION POPUP", settings[SET_POPUP] ? "ON" : "OFF", 0xe5, 1);
-    row("MENU TIMEOUT",
-        settings[SET_MENU_TIMEOUT] == 0   ? "NEVER"
-        : settings[SET_MENU_TIMEOUT] == 1 ? "5S"
-        : settings[SET_MENU_TIMEOUT] == 2 ? "10S"
-                                          : "20S",
+    row("Startup splash", settings[SET_SPLASH] ? "On" : "Off", 0xe4, 0);
+    row("Connection popup", settings[SET_POPUP] ? "On" : "Off", 0xe5, 1);
+    row("Menu timeout",
+        settings[SET_MENU_TIMEOUT] == 0   ? "Never"
+        : settings[SET_MENU_TIMEOUT] == 1 ? "5s"
+        : settings[SET_MENU_TIMEOUT] == 2 ? "10s"
+                                          : "20s",
         0xe8, 2);
-    row("NO SIGNAL", "", 0, 3);
-    row("BACK", "", 0, 4);
+    row("No signal", "", 0, 3);
+    row("Back", "", 0, 4);
     break;
   case MENU_SIGNAL:
-    row("BACKGROUND",
-        settings[SET_NO_SIGNAL] == 0   ? "BLACK"
-        : settings[SET_NO_SIGNAL] == 1 ? "BLUE"
-                                       : "TEST",
+    row("Background",
+        settings[SET_NO_SIGNAL] == 0   ? "Black"
+        : settings[SET_NO_SIGNAL] == 1 ? "Blue"
+                                       : "Test",
         0xe6, 0);
-    row("SLEEP AFTER",
-        settings[SET_SIGNAL_TIMEOUT] == 0   ? "NEVER"
-        : settings[SET_SIGNAL_TIMEOUT] == 1 ? "1S"
-        : settings[SET_SIGNAL_TIMEOUT] == 2 ? "2S"
-        : settings[SET_SIGNAL_TIMEOUT] == 3 ? "5S"
-        : settings[SET_SIGNAL_TIMEOUT] == 4 ? "10S"
-                                            : "20S",
+    row("Sleep after",
+        settings[SET_SIGNAL_TIMEOUT] == 0   ? "Never"
+        : settings[SET_SIGNAL_TIMEOUT] == 1 ? "1s"
+        : settings[SET_SIGNAL_TIMEOUT] == 2 ? "2s"
+        : settings[SET_SIGNAL_TIMEOUT] == 3 ? "5s"
+        : settings[SET_SIGNAL_TIMEOUT] == 4 ? "10s"
+                                            : "20s",
         0xe7, 1);
-    row("BACK", "", 0, 2);
+    row("Back", "", 0, 2);
     break;
   }
-  osd_menu_end(editing ? "ADJUST +/-  MENU TO FINISH"
-                       : "MENU SELECT  BACK RETURN");
+  osd_menu_end(page == MENU_MAIN ? "Menu: open  Back: exit"
+               : editing ? "Adjust +/-  Menu: done"
+                         : "Menu: edit  Back: tabs");
 }
 
 void control_service(uint32_t now) {

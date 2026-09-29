@@ -11,7 +11,9 @@ analysis and earlier bench experiments with
 [tkdesign-jp's port](https://github.com/tkdesign-jp/ORTD2662). It is not a formal
 clean-room implementation. Hardware facts and unresolved assumptions are
 recorded in [video notes](docs/video-registers.md) and
-[display-control notes](docs/ui-capabilities.md). New source is MIT licensed.
+[display-control notes](docs/ui-capabilities.md). New source and category icons
+are MIT licensed. The bundled Roboto Condensed font and its generated bitmap
+glyphs are under SIL OFL 1.1; see the [font source and license](assets/fonts/README.md).
 
 ## Build
 
@@ -61,6 +63,14 @@ Unsupported input keeps its measured settings and the first rejection reason on
 screen. Missing measurements display `--`; disconnected input retains the TV
 test card. These messages do not expand the supported video modes.
 
+Menus and timing messages use native 12×18 antialiased glyphs, with lowercase,
+uppercase, digits and punctuation. Their 2-bpp coverage maps to four palette
+colors before the OSD's 2× zoom. Generated font and icon headers are checked in,
+so ordinary firmware builds do not need a font converter. To regenerate them
+and inspect a glyph sheet, run `python tools/font_to_header.py --preview
+build/menu-font.png` with the versions listed in the
+[font regeneration guide](assets/fonts/README.md).
+
 `make TRACE=1` enables bench diagnostics in the EDID ASCII descriptor and MCU
 scratch registers. Its output directory ends in `-trace`. This changes the
 descriptor during measurement; use the default `TRACE=0` for ordinary display
@@ -89,15 +99,19 @@ Only the supplied UC-586/800x480 combination is implemented. Video acceptance
 supports native 800x480 at 1000x525 timing, PicoDVI's alternate 800x480 at
 992x500 timing, and centered 640x480 at 800x525 timing. Keep aspect is the
 default: 640x480 stays at 1:1 with 80-pixel black sidebars; 800x480 fills the
-panel. The live Display menu can select `KEEP` or `FILL`; fill expands 640x480
+panel. The live Display menu can select `Keep` or `Fill`; fill expands 640x480
 across the panel. All supported inputs are
 near 60 Hz. These are explicit timing profiles, not arbitrary mode detection;
 see the [timing contract](docs/video-registers.md#supported-timing-contract).
 
 ## Display controls
 
-The live menu has Picture, Audio, Display and Menu Settings pages, including a
-No Signal submenu. The RP2350 tester sends menu/select, back, up, down and power
+The live menu has a left column of Picture, Audio, Display and Menu Settings
+icons, with the selected category's current settings shown alongside. Menu
+enters the settings pane; Back returns to the same category. Mixed-case text,
+outlined icons, a selection bar and percentage sliders use the antialiased
+font palette. Menu Settings includes a No Signal submenu.
+The RP2350 tester sends menu/select, back, up, down and power
 events over DDC/CI while video runs. Physical button decoding remains pending.
 See the [control map and host commands](docs/ddcci.md).
 

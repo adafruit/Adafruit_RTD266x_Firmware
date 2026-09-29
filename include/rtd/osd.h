@@ -22,7 +22,9 @@ void osd_show_menu_preview(uint8_t page, uint8_t variant);
 /* Restore the overlay port if a hardware background transition cleared it. */
 void osd_service(void);
 /* Framed live menu; caller supplies up to five items between title/footer. */
-void osd_menu_begin(const char *title);
+/* Tab 0..3 selects Picture/Audio/Display/Settings; rail_focus highlights
+ * category navigation instead of a setting in the right pane. */
+void osd_menu_begin(const char *title, uint8_t tab, uint8_t rail_focus);
 void osd_menu_row(const char *label, const char *choice, uint8_t value,
                   uint8_t percent, uint8_t selected, uint8_t available);
 void osd_menu_end(const char *footer);

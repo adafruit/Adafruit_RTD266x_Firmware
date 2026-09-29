@@ -20,11 +20,13 @@ python host.py vcp-get 0x8d
 python host.py vcp-set 0x8d 2
 ```
 
-Add `--port` or `--serial` before the subcommand to select a tester. Menu selects
-a row or enters/leaves adjustment; up/down move or adjust; back returns one
-level. Percentage adjustments step by five. Disabled rows do not enter edit
-mode. The main pages are Picture, Audio, Display and Menu Settings; No Signal
-is a submenu of Menu Settings.
+Add `--port` or `--serial` before the subcommand to select a tester. Menu opens
+a four-icon rail on the left: Picture, Audio, Display and Menu Settings.
+Up/down select a category and preview its current settings in the right pane;
+Menu enters that pane. Up/down then select a row, and Menu enters/leaves its
+adjustment. Back leaves adjustment, returns to the same category icon, or
+closes the rail. Percentage adjustments step by five. Disabled rows do not
+enter edit mode. No Signal is a submenu of Menu Settings.
 
 ## Control map
 
@@ -54,10 +56,12 @@ from the capabilities string; its menu row is disabled with a gray `--`.
 Volume (`62`), mirror and rotation are also unavailable. Image brightness
 changes pixel values independently of LED backlight.
 
-For `E1`, page numbers are 0 closed, 1 main, 2 Picture, 3 Audio, 4 Display,
+For `E1`, page numbers are 0 closed, 1 category rail, 2 Picture, 3 Audio, 4 Display,
 5 Menu Settings and 6 No Signal. Selection is zero-based; editing is bit zero.
 For example, `0x0201` means Picture, first row, adjustment active. Selection
 bits are relevant while a menu is open. `menu-state` returns the raw VCP value.
+On the rail, selection 0–3 identifies Picture, Audio, Display or Menu Settings;
+for example, `0x0104` previews Display, and Menu changes to `0x0400` to enter it.
 
 Startup Splash changes resume after `D6=4` then `D6=1`; cold boot still follows
 the build-time `SPLASH` option. No-signal sleep requests backlight power off after
@@ -93,6 +97,19 @@ backup, authorization, readback and protection safeguards.
 After programming, explicitly run `python host.py reset-chip` before returning
 the tester to `mode 640`. An ISP-only MCU restart retained DDC peripheral state
 on the bench; a whole-chip reset restored the live interface.
+
+The 2026-09-29 v31 font/icon-rail build passed full 512 KiB readback and restored
+protection to `0x0C`; its full-image SHA256 was
+`b5aeb66f6e3d40081dcf518f3bc075c3d2998d5ab57a40310d36b9d7ea35d4d5`.
+Thirty key events checked the four category previews, all settings pages,
+No Signal, edit mode, unavailable rows and category-preserving Back. Ten setting
+readbacks confirmed the normal defaults after brightness and mute adjustments.
+An additional 53 category changes ran during a 20-second analog audio capture:
+the 1 kHz tone remained at -15.364 dBFS RMS, with 50 ms windows ranging from
+-15.373 to -15.357 dBFS and no measured dropouts. The analysis excludes the
+capture's first and last second. Bitmap-to-text replacement, the timing popup,
+return to Picture and ten-second menu expiry also passed. Photos partly obscure
+the lower rail/footer; the host SRAM renderer checks their complete layout.
 
 On 2026-09-29, the UC-586 v29 image passed full 512 KiB readback and protection
 restoration to `0x0C`. Its full-image SHA256 was

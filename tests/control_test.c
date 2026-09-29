@@ -18,6 +18,7 @@ static uint8_t brightness, contrast, fill, backlight;
 static unsigned picture_writes, aspect_writes, backlight_writes;
 static unsigned mute_writes, stops, hides, renders, row_count;
 static const char *title, *footer;
+static uint8_t active_tab, rail_focus;
 static uint8_t drawing, inject_at, inject_key;
 static unsigned injected;
 static struct {
@@ -53,9 +54,12 @@ static void poll_virtual_key(uint8_t point) {
   }
 }
 
-void osd_menu_begin(const char *text) {
+void osd_menu_begin(const char *text, uint8_t tab, uint8_t focus) {
   assert(!drawing);
+  assert(tab < 4);
   drawing = 1;
+  active_tab = tab;
+  rail_focus = focus;
   title = text; row_count = 0; ++renders;
   poll_virtual_key(1);
 }
@@ -70,7 +74,11 @@ void osd_menu_row(const char *label, const char *choice, uint8_t value,
   rows[row_count++].available = available;
   poll_virtual_key(2);
 }
-void osd_menu_end(const char *text) { footer = text; drawing = 0; }
+void osd_menu_end(const char *text) {
+  assert(strlen(text) <= 22);
+  footer = text;
+  drawing = 0;
+}
 
 static void fixture(void) {
   clock_ms = 0;
@@ -79,6 +87,7 @@ static void fixture(void) {
   picture_writes = aspect_writes = backlight_writes = mute_writes = 0;
   stops = hides = renders = row_count = 0;
   title = footer = 0;
+  active_tab = rail_focus = 0;
   drawing = inject_at = inject_key = 0;
   injected = 0;
   control_init();
@@ -114,33 +123,81 @@ static void enter(uint8_t main_item) {
 }
 
 static void test_navigation(void) {
-  static const char *titles[] = {"PICTURE", "AUDIO", "DISPLAY", "MENU SETTINGS"};
-  uint8_t i;
+  static const char *titles[] = {"Picture", "Audio", "Display", "Menu settings"};
+  static const char *first_labels[] = {"Image brightness", "Volume",
+                                      "LED backlight", "Startup splash"};
+  uint8_t i, j;
   fixture();
   event(BOARD_KEY_MENU);
-  assert(!strcmp(title, "ADAFRUIT MENU") && row_count == 5);
-  assert(rows[0].selected && rows[4].available);
+  assert(!strcmp(title, "Picture") && row_count == 3);
+  assert(rail_focus && active_tab == 0 && !rows[0].selected);
+  assert(!strcmp(footer, "Menu: open  Back: exit"));
   event(BOARD_KEY_INCREASE);
-  state(MENU_MAIN, 4, 0);
+  state(MENU_MAIN, 3, 0);
+  assert(rail_focus && active_tab == 3 && !strcmp(title, "Menu settings"));
   event(BOARD_KEY_DECREASE);
   state(MENU_MAIN, 0, 0);
   down(4);
-  event(BOARD_KEY_MENU);
-  state(MENU_CLOSED, 4, 0);
+  state(MENU_MAIN, 0, 0); /* The rail has four categories, with no Exit row. */
+  assert(picture_writes == 1 && !aspect_writes && !mute_writes && !backlight_writes);
+  event(BOARD_KEY_BACK);
+  state(MENU_CLOSED, 0, 0);
   assert(hides == 1 && control_overlay_changed());
   assert(!control_overlay_changed());
   for (i = 0; i < 4; ++i) {
     fixture();
-    enter(i);
+    event(BOARD_KEY_MENU);
+    down(i);
+    state(MENU_MAIN, i, 0);
+    assert(rail_focus && active_tab == i);
+    assert(!strcmp(title, titles[i]) && !strcmp(rows[0].label, first_labels[i]));
+    assert(row_count == (i < 2 ? 3u : 5u));
+    for (j = 0; j < row_count; ++j) assert(!rows[j].selected);
+    event(BOARD_KEY_MENU);
     state(MENU_PICTURE + i, 0, 0);
+    assert(!rail_focus && active_tab == i && rows[0].selected);
     assert(!strcmp(title, titles[i]));
     assert(row_count == (i < 2 ? 3u : 5u));
+    assert(!strcmp(footer, "Menu: edit  Back: tabs"));
+    event(BOARD_KEY_BACK);
+    state(MENU_MAIN, i, 0); /* Back key retains the category. */
+    assert(rail_focus && active_tab == i);
+    event(BOARD_KEY_MENU);
     down(row_count - 1);
-    event(BOARD_KEY_MENU); /* Explicit BACK row. */
-    state(MENU_MAIN, 0, 0);
+    event(BOARD_KEY_MENU); /* Explicit Back row also retains the category. */
+    state(MENU_MAIN, i, 0);
+    assert(rail_focus && active_tab == i);
+    for (j = 0; j < row_count; ++j) assert(!rows[j].selected);
     event(BOARD_KEY_BACK);
     assert(!control_menu_open() && hides == 1);
   }
+}
+
+static void test_rail_previews_settings(void) {
+  fixture();
+  assert(control_set(0xe2, 65) && control_set(0x12, 40));
+  assert(control_set(0x8d, 1) && control_set(0xe3, 1));
+  assert(control_set(0xe4, 0) && control_set(0xe8, 0));
+  backlight_available = 0;
+  event(BOARD_KEY_MENU);
+  assert(rows[0].value == 65 && rows[1].value == 40);
+  assert(rows[0].percent && rows[1].percent && !rows[0].selected);
+  assert(control_set(0xe2, 70));
+  control_service(clock_ms);
+  assert(rows[0].value == 70 && rail_focus);
+  down(1);
+  assert(!rows[0].available && !strcmp(rows[1].choice, "On"));
+  down(1);
+  assert(!rows[0].available && !rows[2].available && !rows[3].available);
+  assert(!strcmp(rows[1].choice, "Fill"));
+  event(BOARD_KEY_MENU);
+  event(BOARD_KEY_MENU);
+  state(MENU_DISPLAY, 0, 0); /* Disabled LED level cannot enter adjustment. */
+  event(BOARD_KEY_BACK);
+  down(1);
+  assert(!strcmp(rows[0].choice, "Off") && !strcmp(rows[2].choice, "Never"));
+  assert(picture_writes == 4 && mute_writes == 1 && aspect_writes == 1);
+  assert(!backlight_writes);
 }
 
 static void test_shared_picture_settings(void) {
@@ -148,7 +205,7 @@ static void test_shared_picture_settings(void) {
   enter(0);
   event(BOARD_KEY_MENU);
   state(MENU_PICTURE, 0, 1);
-  assert(strstr(footer, "ADJUST"));
+  assert(!strcmp(footer, "Adjust +/-  Menu: done"));
   event(BOARD_KEY_INCREASE);
   assert(brightness == 55 && contrast == 50 && picture_writes == 2);
   assert(value(0xe2, 100) == 55 && rows[0].value == 55 && rows[0].percent);
@@ -183,7 +240,7 @@ static void test_audio_and_display(void) {
   down(1);
   event(BOARD_KEY_MENU);
   event(BOARD_KEY_INCREASE);
-  assert(muted && value(0x8d, 2) == 1 && !strcmp(rows[1].choice, "ON"));
+  assert(muted && value(0x8d, 2) == 1 && !strcmp(rows[1].choice, "On"));
   event(BOARD_KEY_DECREASE);
   assert(!muted && value(0x8d, 2) == 2);
   assert(control_set(0x8d, 1) && muted);
@@ -232,15 +289,16 @@ static void test_settings_and_signal(void) {
   down(1);
   event(BOARD_KEY_MENU);
   event(BOARD_KEY_INCREASE);
-  assert(value(0xe8, 3) == 3 && !strcmp(rows[2].choice, "20S"));
+  assert(value(0xe8, 3) == 3 && !strcmp(rows[2].choice, "20s"));
   event(BOARD_KEY_MENU);
   down(1);
   event(BOARD_KEY_MENU);
   state(MENU_SIGNAL, 0, 0);
-  assert(!strcmp(title, "NO SIGNAL") && row_count == 3);
+  assert(!strcmp(title, "No signal") && row_count == 3);
+  assert(active_tab == 3 && !rail_focus);
   event(BOARD_KEY_MENU);
   event(BOARD_KEY_DECREASE);
-  assert(value(0xe6, 2) == 1 && !strcmp(rows[0].choice, "BLUE"));
+  assert(value(0xe6, 2) == 1 && !strcmp(rows[0].choice, "Blue"));
   assert(control_overlay_changed() && !control_overlay_changed());
   event(BOARD_KEY_MENU);
   down(1);
@@ -255,6 +313,7 @@ static void test_settings_and_signal(void) {
   state(MENU_SIGNAL, 1, 0);
   event(BOARD_KEY_BACK);
   state(MENU_SETTINGS, 3, 0);
+  assert(!strcmp(title, "Menu settings") && active_tab == 3 && !rail_focus);
   event(BOARD_KEY_MENU);
   state(MENU_SIGNAL, 0, 0);
   down(2);
@@ -333,11 +392,12 @@ static void test_callbacks_during_render(void) {
   event(BOARD_KEY_MENU);
   state(MENU_PICTURE, 0, 0);
   assert(injected == 1 && renders == 1 && !drawing && !hides);
-  /* Title was chosen before the callback entered Picture. The subsequent
-   * service must redraw the new page, preserving dirty set during rendering. */
-  assert(!strcmp(title, "ADAFRUIT MENU"));
+  /* Rail focus was chosen before the callback entered Picture. The subsequent
+   * service must redraw the new focus, preserving dirty set during rendering. */
+  assert(!strcmp(title, "Picture") && rail_focus);
   control_service(clock_ms);
-  assert(renders == 2 && !strcmp(title, "PICTURE") && row_count == 3);
+  assert(renders == 2 && !strcmp(title, "Picture") && row_count == 3);
+  assert(!rail_focus && active_tab == 0 && rows[0].selected);
   control_service(clock_ms);
   assert(renders == 2 && injected == 1);
 
@@ -347,8 +407,10 @@ static void test_callbacks_during_render(void) {
   event(BOARD_KEY_MENU);
   state(MENU_MAIN, 1, 0);
   assert(injected == 1 && renders == 1 && !hides);
+  assert(!strcmp(title, "Picture") && active_tab == 0 && rail_focus);
   control_service(clock_ms);
-  assert(renders == 2 && !rows[0].selected && rows[1].selected);
+  assert(renders == 2 && !strcmp(title, "Audio") && active_tab == 1 && rail_focus);
+  assert(!rows[0].selected && !rows[1].selected && !rows[2].selected);
 
   for (i = 0; i < sizeof closing_keys; ++i) {
     fixture();
@@ -367,6 +429,7 @@ static void test_callbacks_during_render(void) {
 
 int main(void) {
   test_navigation();
+  test_rail_previews_settings();
   test_shared_picture_settings();
   test_audio_and_display();
   test_settings_and_signal();

@@ -31,9 +31,13 @@ successful video acquisition. No-signal artwork works with the startup splash
 disabled. The two images reuse OSD SRAM rather than being resident together.
 
 `osd_show_input()` replaces the bitmap with five rows of white text on opaque
-black, inset 16 pixels from the top left. Its original 5x7 diagnostic alphabet
-is expanded inside 12x18 glyphs and shown with global 2x zoom; character rows
-remain 1x. The same global zoom preserves the bitmap's calibrated frame origin.
+black, inset 16 pixels from the top left. It uses native 12x18, two-bit
+antialiased glyphs shown with global 2x zoom; character rows remain 1x. The
+95-character ASCII font includes lowercase, uppercase, digits and punctuation.
+It is rasterized from the bundled OFL Roboto Condensed source, replacing the
+earlier expanded 5x7 alphabet. The [font guide](../assets/fonts/README.md)
+documents licensing and deterministic regeneration. The same global zoom
+preserves the bitmap's calibrated frame origin.
 The input overlay lasts three seconds after acquisition when Connection Popup
 is enabled, without pausing input
 monitoring. Rejected input keeps its measured geometry, estimated refresh,
@@ -50,37 +54,59 @@ followed by unobstructed video after expiry.
 ## Live menu and artwork preview
 
 The normal firmware implements Picture, Audio, Display and Menu Settings menus,
-plus a No Signal submenu. Menu selects a row or enters/leaves adjustment; up/down
-move selection or change a value; back leaves adjustment or returns one level.
+plus a No Signal submenu. A left icon rail selects the four categories; Menu
+opens the selected category's controls. Within a page, Menu enters/leaves
+adjustment; up/down move selection or change a value. Back leaves adjustment,
+returns to the icon rail, or closes the menu from the rail.
 The RP2350 tester can send these events over DDC/CI while video runs. Physical
 key decoding remains pending. The [DDC/CI reference](ddcci.md) documents commands,
-setting values and menu-state readback. All six live pages, virtual navigation,
-editing and setting readback passed [bench validation](ddcci.md#transport-and-validation);
+setting values and menu-state readback. The earlier menu implementation's six
+live pages, virtual navigation, editing and setting readback passed
+[bench validation](ddcci.md#transport-and-validation);
 picture, aspect, mute and backlight off/wake also passed the checks recorded there.
 
-Picture's `IMAGE BRIGHTNESS` changes pixel values. Display's `LED BACKLIGHT`
+Picture's `Image brightness` changes pixel values. Display's `LED backlight`
 is disabled and shows a gray `--`: PWM1 requests for 100%, 25% and 0% were
 accepted, but three camera captures showed no visible brightness change.
 Contrast, audio mute, Keep/Fill aspect and the runtime options below are wired
 to the shared settings controller. Volume, rotation and mirror remain disabled.
 The separate P6.4/pin54 backlight power gate passed physical off/wake checks.
 
-Live menus use a centered 720x360 panel with a thin outline, dark navy body,
-separate title strip and cyan page icons. White chevrons and blue row backgrounds
-mark selection; unavailable controls keep gray labels and values. Values align
-at the right edge, and the footer changes to cyan while adjusting a setting.
-The existing diagnostic alphabet stays readable at 2x zoom; original 12x18
-symbols supply the borders and icons. Ten rows of 30 map entries fit below the
-font base at word `0x140`. Text and symbols share a 75-glyph cache, invalidated
-when splash or no-signal bitmap tiles replace it.
+Live menus use a centered 720x432 panel with a thin outline, dark navy body,
+title and four original category icons in a left rail. Each icon occupies four
+12x18 glyphs, producing a 48x72 panel-pixel image at 2x zoom. Blue backgrounds
+mark focused icons or selected control rows; the active category turns cyan
+when focus moves to its controls. Unavailable controls keep gray labels and
+values. Values align at the right edge; percentage controls have a track below
+the rows, and the footer changes to cyan during adjustment.
 
-The host OSD test can export the rendered SRAM as four 800x480 PPM previews,
+Twelve rows of 30 map entries occupy words `0x010..0x177`, below the font base
+at `0x180`. The shared cache contains 122 two-bit glyphs: 95 text characters,
+16 icon quadrants and 11 original border/arrow symbols. Each glyph occupies
+18 words (54 bytes); the cache ends at `0xA13`. Splash or no-signal bitmap tiles
+invalidate this cache. Four coverage levels select background, two edge colors
+and foreground from the palette. The generated glyphs, original icons and
+renderer pass the host model and the v31 board checks described below.
+
+On 2026-09-29, the v31 two-bit font and icon rail were flashed to the UC-586,
+with all 512 KiB verified and protection restored to `0x0C`. Camera captures
+show readable mixed-case labels, category icons, selected rows and the four
+pages plus No Signal. DDC readback confirmed navigation, category-preserving
+Back, adjustment and disabled-row behavior. A foreground cable obscures the
+lower icons and footer, so their complete geometry is checked by the decoded
+SRAM previews. Camera colors are not calibrated to the software palette.
+The no-signal bitmap, reloaded input font, three-second timing popup, reopening
+Picture, and ten-second menu expiry also passed. See [bench details](ddcci.md#transport-and-validation).
+
+The host OSD test can export the rendered SRAM as 800x480 PPM previews,
 without a board or firmware flash. After `make OUT=build/menu-style check`, run
 `build/menu-style/tests/osd_test build/menu-style/osd-preview`. This produces
-`-live.ppm`, `-edit.ppm`, `-picture.ppm` and `-display.ppm`; values in these
-host previews are samples, not saved settings.
+16 `-tabN-{rail,pane}-{full,short}.ppm` scenes for the four categories, plus
+`-picture.ppm` and `-display.ppm`. Values in these host previews are samples,
+not saved settings.
 
-The 2026-09-29 v30 bench build passed full 512 KiB readback and restored flash
+Historical validation: the 2026-09-29 v30 bench build, with the earlier ten-row,
+one-bit menu artwork, passed full 512 KiB readback and restored flash
 protection to `0x0C` (full-image SHA256
 `80b96393c09178ac4b1c8b2695368e2f9be2b99037fcaa0f74f930f002c1aa22`).
 All six live pages and Picture adjustment matched DDC menu-state readback.
@@ -89,7 +115,8 @@ a foreground cable obscured part of the left edge and some captures were soft.
 The decoded SRAM previews independently cover complete geometry and palette
 values. No-signal bitmap display, return to video, reopening Picture after the
 bitmap, and automatic menu dismissal also passed. Host checks cover restoring
-the input overlay's white-on-black palette and original font after live menus.
+the input overlay's white-on-black palette and font after live menus. These
+captures predate the current two-bit font and category rail.
 
 `make MENU_PREVIEW=1` separately cycles through the main menu and Picture, Audio, Display
 and Menu Settings after the startup splash. Each has three sample variants,
@@ -98,8 +125,8 @@ Font upload adds time between pages. All values are artwork samples: the preview
 does not read buttons or change video, audio, backlight or stored settings.
 The normal build leaves the preview disabled.
 
-The older static preview's seven-row, 30-column layout is centered at 720x252 panel pixels. It reuses
-the diagnostic alphabet, adding a percent glyph, and uses green titles, blue
+The separate static preview's seven-row, 30-column layout is centered at
+720x252 panel pixels. It now shares the native two-bit font and uses green titles, blue
 selection rows and green/gray slider tracks. The map ends before the font base.
 The variants exercise 0/50/100 percent tracks, mute on/off, alternative aspect
 labels, timeout values and a highlighted Back row. Rotation and mirror show
@@ -108,16 +135,17 @@ The preview's `FILL` sample does not change scaling; the live Display menu does.
 Host checks cover every page/variant, slider endpoints, centering, palette and
 return from the larger menu map to the five-row input overlay.
 
-On 2026-09-29, the UC-586 camera sequence confirmed all four submenus at
+Historical validation: on 2026-09-29, the UC-586 camera sequence with the
+previous one-bit diagnostic alphabet confirmed all four static submenus at
 0/50/100 percent, the selection and Back rows, and readable labels without
 clipping. After the sequence, the measured input overlay appeared over live
 color bars and expired normally. Full 512 KiB readback matched the preview
 image, and flash protection was restored to `0x0C`.
 
-The [classic RTD2660 Adafruit guide](https://learn.adafruit.com/hdmi-uberguide/rtd2660-hdmi-vga-ntsc-pal-driver-board)
-includes photographed Color, OSD and Function menus. Its Menu/select,
-Auto/back and plus/minus navigation is a reference for the interaction;
-the artwork and rendering code here are independently implemented.
+The [RTD2668 Adafruit guide](https://learn.adafruit.com/hdmi-uberguide/rtd2668-hdmi-vga-ntsc-pal-driver-board-audio)
+documents Color, Sound and Function menus. Its Menu/select, Auto/back and
+plus/minus navigation is a reference for the interaction. The requested left
+icon rail, artwork and rendering code here are independently implemented.
 
 The SRAM port accepts Byte0, Byte1, Byte2 while each glyph's first scan line
 occupies bits 23:12. Before global zoom, horizontal frame delay uses four-pixel
@@ -132,7 +160,7 @@ The converter centers the bitmap in a 7x4 tile rectangle, adding one transparent
 pixel on each side and four above and below. Each OSD row and the global frame
 request 2x scale, producing a 328x256 logo within a 336x288 rectangle. The
 row map starts at SRAM word zero, character selections at word `0x010`, and
-fonts at word `0x140`; they do not overlap. The 28 tiles occupy 756 bytes of
+fonts at word `0x180`; they do not overlap. The 28 tiles occupy 756 bytes of
 dedicated OSD SRAM, not 8051 XRAM. Those tile bytes and a six-byte RGB palette
 are stored in flash. Host tests also receive the original 704-byte row-major
 bitmap; the 8051 build excludes that reference copy.
@@ -141,8 +169,12 @@ Four-bit palette tiles occupy 36 words each: four consecutive one-bit planes,
 with palette bit zero first. Each plane uses the same nine-word packing as a
 monochrome tile. A map entry `0x90, tile_index, 0` selects LUT colors and a
 transparent background; its selector is limited to seven bits. At the current
-font base, the lower 12 KiB SRAM bank holds 104 such tiles. The converter's
-192x108 limit requires at most 96 tiles. Frame position and 4x scaling are
+font base, the documented SRAM range holds exactly 96 such tiles. The manual's
+address table on printed page 358 specifies `0x000..0xEFF`: 3,840 words, or
+11,520 bytes. A 12-bit address field and the host model's 4,096-word array do
+not establish that `0xF00..0xFFF` is usable SRAM. With font base `0x180`,
+`(0xF00 - 0x180) / 36 = 96`; the converter's 192x108 limit requires at most
+those 96 tiles, ending at `0xEFF`. Frame position and 4x scaling are
 identical in both formats. Planar ordering was derived from bounded reference
 data analysis; the project includes only its own color chart and the attributed
 Adafruit bitmap. The 15-color chart, its transparent gaps, and the low-bit-first
@@ -175,7 +207,7 @@ precisely time the delay from initial loss. `Never` disables automatic sleep.
 | Control | Hardware basis | Project status |
 | --- | --- | --- |
 | Full-screen startup | Free-running display background plus a centered bitmap | One-second hold after bitmap upload; input video is enabled afterward |
-| Text menus | Row and character maps, proportional 12x18 tiles, 16-color palette, transparent background | Six live pages, DDC/CI navigation and editing bench verified; physical keys pending |
+| Text menus | Row and character maps, 12x18 two-bit glyphs, 16-color palette, transparent background | Current 12-row icon rail, category navigation and editing host/bench tested; physical keys pending |
 | Small graphic splash | 1-, 2- or 4-bit tiles in dedicated OSD SRAM, with shared palette and window effects | Automatic BMP conversion; one-bit or four-bit tiles, 15 visible colors plus transparency, 4x scale |
 | Video brightness | Per-channel RGB additive coefficients, separate from backlight power | Live 0–100 control; setting 75 visibly lifted black to gray, then restored to neutral 50 |
 | Video contrast | Per-channel RGB multiplicative coefficients | Live 0–100 control; setting 25 visibly darkened the picture, then restored to neutral 50 |
@@ -257,13 +289,17 @@ linked for reference; the PDF is not distributed by this repository.
 - **Pages 330-331 and 341:** pin 98/P5.4 and pin 99/P5.5 pin-sharing and GPIO
   registers, relevant to the known panel scan-direction approach above.
 - **Pages 358-359:** OSD address bits 15:14 select the byte lane or all three;
-  bit 12 selects SRAM versus frame/window registers. Addresses count words.
+  bit 12 selects SRAM versus frame/window registers. Addresses count words;
+  the SRAM map explicitly lists `0x000..0xEFF` (3,840 three-byte words).
 - **Pages 383-389:** frame position/enable, font-map bases, compression and OSD
   rotation. The manual has conflicting older references to frame register
   `0x002`; the detailed frame-control table describes `0x003`. This driver
   avoids rotation and compression.
 - **Pages 390-398:** row commands, character selection and packed font layout.
-  One 12x18 one-bit glyph occupies nine 24-bit words.
+  One 12x18 one-bit glyph occupies nine 24-bit words; a two-bit glyph occupies
+  18 and a four-bit glyph 36. The two-bit character command on pages 396-397
+  assigns four palette colors, with shared high bits for the 00/11 and 01/10
+  pairs. Background 00 mapped to palette 0 or 8 is transparent.
 
 ## Using firmware dumps and Ghidra
 
