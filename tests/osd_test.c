@@ -8,12 +8,12 @@
 #include "rtd/panel.h"
 
 #define OSD_CODE
-#include "../assets/splash_bitmap.h"
+#include "splash_bitmap.h"
 
 /* Model the documented three byte lanes and auto-incrementing word port,
  * independently of the driver's bitmap packing code. */
 static uint8_t regs[256], frame[16][3], sram[4096][3];
-static uint8_t written[4096][3], palette[3];
+static uint8_t written[4096][3], palette[48];
 static uint16_t address;
 static unsigned lane, palette_bytes;
 
@@ -48,7 +48,7 @@ void rtd_write(uint8_t page, uint8_t reg, uint8_t value) {
       ++address;
     }
   } else if (reg == 0x6f) {
-    assert(regs[0x6e] == 0x83 && palette_bytes < 3);
+    assert(regs[0x6e] == 0x80 && palette_bytes < sizeof(palette));
     palette[palette_bytes++] = value;
   }
 }
@@ -66,17 +66,25 @@ int main(void) {
   unsigned map, fonts, row, column, x, y, differing_pairs = 0;
   unsigned x_delay, y_delay;
 
+  assert(SPLASH_BITMAP_BPP == 1 || SPLASH_BITMAP_BPP == 4);
+  assert(SPLASH_PALETTE_COLORS <= 16);
   osd_init();
   assert(!(regs[0x6c] & 1) && !(frame[0][2] & 1));
   assert(frame[3][1] == 0);
-  assert(palette_bytes == 3);
-  assert(palette[0] == 255 && palette[1] == 255 && palette[2] == 255);
+  assert(palette_bytes == SPLASH_PALETTE_COLORS * 3);
+  for (row = 0; row < SPLASH_PALETTE_COLORS; ++row) {
+    for (column = 0; column < 3; ++column) {
+      assert(palette[row * 3 + column] == splash_palette[row][column]);
+    }
+  }
+  assert(!(regs[0x6e] & 0x80));
 
   map = frame[4][0] | ((unsigned)(frame[4][1] & 0xf0) << 4);
   fonts = (frame[4][1] & 0x0f) | ((unsigned)frame[4][2] << 4);
   assert(rows + 1 <= map);
   assert(map + rows * columns <= fonts);
-  assert(fonts + rows * columns * 9 <= 4096);
+  assert(fonts + rows * columns * 9 * SPLASH_BITMAP_BPP <= 4096);
+  assert(rows * columns <= (SPLASH_BITMAP_BPP == 4 ? 128 : 256));
   for (row = 0; row < rows; ++row) {
     assert(sram[row][0] == 0x83); /* Enabled, row width/height both 2x. */
     assert((sram[row][1] >> 3) + 1u == 18);
@@ -84,42 +92,49 @@ int main(void) {
     assert(sram[row][2] == columns);
     for (column = 0; column < columns; ++column) {
       unsigned entry = map + row * columns + column;
-      assert(sram[entry][0] == 0x8c);
+      assert(sram[entry][0] == (SPLASH_BITMAP_BPP == 1 ? 0x8c : 0x90));
       assert(sram[entry][1] == row * columns + column);
-      assert(sram[entry][2] == 0x10); /* White foreground, transparent zero. */
+      assert(sram[entry][2] == (SPLASH_BITMAP_BPP == 1 ? 0x10 : 0));
     }
   }
   assert(sram[rows][0] == 0 && sram[rows][1] == 0 && sram[rows][2] == 0);
 
-  /* Recover each pixel through the map and the hardware's 24-bit word.
-   * Odd and even scan lines differ in this asset, unlike the old 2x font. */
+  /* Recover indices through the map and 24-bit words. Multicolor tiles
+   * contain complete 27-byte planes, starting with palette-index bit zero. */
   for (y = 0; y < height; ++y) {
     for (x = 0; x < width; ++x) {
       unsigned entry = map + (y / 18) * columns + x / 12;
-      unsigned word = fonts + sram[entry][1] * 9 + (y % 18) / 2;
-      uint32_t pixels = (uint32_t)sram[word][0] |
-                        ((uint32_t)sram[word][1] << 8) |
-                        ((uint32_t)sram[word][2] << 16);
       unsigned bit = (y % 2 ? 11 : 23) - x % 12;
-      unsigned expected = 0;
+      unsigned expected = 0, actual = 0, plane;
+      for (plane = 0; plane < SPLASH_BITMAP_BPP; ++plane) {
+        unsigned word = fonts + sram[entry][1] * 9 * SPLASH_BITMAP_BPP +
+                        plane * 9 + (y % 18) / 2;
+        uint32_t pixels = (uint32_t)sram[word][0] |
+                          ((uint32_t)sram[word][1] << 8) |
+                          ((uint32_t)sram[word][2] << 16);
+        actual |= ((pixels >> bit) & 1) << plane;
+        if (!(y % 2) && ((pixels >> 12) & 0xfff) != (pixels & 0xfff)) {
+          ++differing_pairs;
+        }
+      }
       if (x >= pad_x && x < pad_x + SPLASH_BITMAP_WIDTH &&
           y >= pad_y && y < pad_y + SPLASH_BITMAP_HEIGHT) {
         unsigned source_x = x - pad_x, source_y = y - pad_y;
-        unsigned byte = source_y * ((SPLASH_BITMAP_WIDTH + 7) / 8) + source_x / 8;
-        expected = (splash_bitmap[byte] >> (7 - source_x % 8)) & 1;
+        unsigned source_bit = source_x * SPLASH_BITMAP_BPP;
+        unsigned byte = source_y * ((SPLASH_BITMAP_WIDTH * SPLASH_BITMAP_BPP + 7) / 8) +
+                        source_bit / 8;
+        expected = (splash_bitmap[byte] >> (8 - SPLASH_BITMAP_BPP - source_bit % 8)) &
+                   ((1u << SPLASH_BITMAP_BPP) - 1);
       }
-      assert(((pixels >> bit) & 1) == expected);
-      if (!(y % 2) && ((pixels >> 12) & 0xfff) != (pixels & 0xfff)) {
-        ++differing_pairs;
-      }
+      assert(actual == expected);
+      assert(actual < SPLASH_PALETTE_COLORS);
     }
   }
-  assert(differing_pairs > 0);
   /* Every expected word has all lanes; unused SRAM was not overwritten. */
   for (row = 0; row < 4096; ++row) {
     unsigned used = row <= rows ||
                     (row >= map && row < map + rows * columns) ||
-                    (row >= fonts && row < fonts + rows * columns * 9);
+                    (row >= fonts && row < fonts + rows * columns * 9 * SPLASH_BITMAP_BPP);
     for (column = 0; column < 3; ++column) {
       assert(written[row][column] == used);
     }
@@ -138,6 +153,7 @@ int main(void) {
   osd_hide();
   assert(!(regs[0x6c] & 1) && !(frame[0][2] & 1));
   assert(frame[3][0] == 0 && frame[3][1] == 0 && frame[3][2] == 0);
-  puts("OSD SRAM bitmap, transparent padding, layout, position and hide passed");
+  printf("OSD %u-bpp bitmap, palette, padding, layout, position and hide passed "
+         "(%u differing scanline comparisons)\n", SPLASH_BITMAP_BPP, differing_pairs);
   return 0;
 }

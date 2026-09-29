@@ -40,6 +40,9 @@ seconds, then the firmware acquires and displays it. The panel free-runs during 
 the screen does not require an input signal. The bitmap is split into tiles
 stored in the scaler's OSD SRAM. Replace `assets/splash.bmp` and run `make` to
 customize it; the build generates the bitmap header automatically using Pillow.
+BMPs can contain up to 15 visible colors plus transparent black; richer images
+are quantized automatically. Use `make SPLASH_BMP=path/to/my-logo.bmp` to select
+another file. Artwork can be up to 192x108 pixels and is displayed at 4x scale.
 See the [artwork format and attribution](assets/README.md). Use
 `make SPLASH=0` to omit it; that build uses a separate `-splash0` directory.
 
@@ -58,7 +61,8 @@ operation. See [diagnostic decoding](docs/video-registers.md#bench-diagnostics).
 | `src/rtd/` | Video acquisition, clock/scaler configuration, EDID generation and OSD |
 | `src/app/` | Firmware policy: acquire video, handle loss and show a splash |
 | `include/rtd/` | Small interfaces between those layers |
-| `assets/` | Startup bitmap and its license |
+| `assets/` | Editable startup BMP and its license |
+| `tools/` | Build-time BMP palette conversion |
 | `tests/` | Host checks for timing arithmetic, register encoding and rejection paths |
 
 The video driver names the scaler page on every register access. The interrupt
@@ -131,13 +135,18 @@ used the Feather DVI source, not a general
 HDMI compatibility suite. Physical cold boot was tested on the initial video
 implementation; the bitmap splash was tested by whole-chip reset. Bitmap upload
 precedes the five-second hold, so the blue background appears before the logo.
+The color renderer was checked on the UC-586 with a 15-color chart, transparent
+gaps and return to video. Packing tiles during conversion makes the chart
+visible in the first startup capture, about two seconds after reset.
 
 SDCC 4.5.0 and host checks pass for splash-on, splash-off and diagnostic builds,
 including a binary/map check that all six interrupt vectors reach the linked
 handlers and a pixel-by-pixel reconstruction of the bitmap from OSD writes.
-The tested default program uses 12,163 bytes of flash and 132 bytes
+BMP tests cover color preservation, palette reduction, transparent black,
+row/tile/plane ordering, size limits and unchanged generated output.
+The tested default program uses 11,689 bytes of flash and 132 bytes
 of XRAM; its 64 KiB bank0 SHA256 is
-`c2ecc173c9d777066b49d473e1916bf759a0c722873666a55dd3edc1155e0098`.
+`6d7428630add8485d75c3aa2821f6a1541f147390f35aa40de2977f82555ddaf`.
 Programming verified all 512 KiB and restored the original protection byte
 `0x0C`. Builds, code and register notes are provided; stock firmware dumps and
 the preserved original flash tail are not distributed.

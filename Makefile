@@ -4,6 +4,7 @@ BOARD ?= uc586
 PANEL ?= rgb800x480
 APP ?= monitor
 SPLASH ?= 1
+SPLASH_BMP ?= assets/splash.bmp
 TRACE ?= 0
 SDCC ?= sdcc
 HOST_CC ?= cc
@@ -17,19 +18,25 @@ SOURCES := src/platform/io.c src/platform/mcs51.c src/platform/ddc.c \
            src/rtd/edid.c src/rtd/video.c src/rtd/osd.c \
            boards/$(BOARD)/board.c panels/$(PANEL).c src/app/$(APP).c
 OBJECTS := $(patsubst %.c,$(OUT)/%.rel,$(SOURCES))
-HEADERS := $(wildcard include/rtd/*.h boards/$(BOARD)/*.h assets/*.h)
-BITMAP_HEADER := assets/splash_bitmap.h
+HEADERS := $(wildcard include/rtd/*.h boards/$(BOARD)/*.h)
+BITMAP_HEADER := $(OUT)/generated/splash_bitmap.h
+OSD_TEST := $(OUT)/tests/osd_test
 CFLAGS := -mmcs51 --std-c11 --model-large --stack-auto --no-xinit-opt \
-          -Iinclude -Iboards/$(BOARD) -DRTD_SPLASH=$(SPLASH) -DRTD_TRACE=$(TRACE)
+          -Iinclude -Iboards/$(BOARD) -I$(OUT)/generated \
+          -DRTD_SPLASH=$(SPLASH) -DRTD_TRACE=$(TRACE)
 LDFLAGS := --xram-loc 0xfb00 --xram-size 512 --code-size 65536
 
-.PHONY: all firmware check
+.PHONY: all firmware check FORCE
 all: firmware
 firmware: $(OUT)/firmware.bin
 	python3 tests/firmware_test.py $(OUT)/firmware.bin $(OUT)/firmware.map
 
-$(BITMAP_HEADER): assets/splash.bmp tools/bmp_to_header.py
-	python3 tools/bmp_to_header.py $< $@
+# Recheck the selected path even when switching to an older BMP. The converter
+# leaves identical output untouched, so unchanged artwork does not recompile.
+$(BITMAP_HEADER): tools/bmp_to_header.py FORCE
+	python3 tools/bmp_to_header.py "$(SPLASH_BMP)" "$@"
+
+FORCE:
 
 $(OUT)/%.rel: %.c $(HEADERS) $(BITMAP_HEADER) Makefile
 	@mkdir -p $(dir $@)
@@ -41,11 +48,11 @@ $(OUT)/firmware.ihx: $(OBJECTS)
 $(OUT)/firmware.bin: $(OUT)/firmware.ihx
 	makebin -s 65536 $< $@
 
-check: firmware build/tests/edid_test build/tests/video_test build/tests/osd_test
+check: firmware build/tests/edid_test build/tests/video_test $(OSD_TEST)
 	python3 tests/bitmap_test.py
 	build/tests/edid_test
 	build/tests/video_test
-	build/tests/osd_test
+	$(OSD_TEST)
 
 build/tests/edid_test: tests/edid_test.c src/rtd/edid.c panels/$(PANEL).c $(HEADERS)
 	@mkdir -p $(dir $@)
@@ -55,6 +62,6 @@ build/tests/video_test: tests/video_test.c src/rtd/video.c $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Iboards/$(BOARD) $< src/rtd/video.c -o $@
 
-build/tests/osd_test: tests/osd_test.c src/rtd/osd.c panels/$(PANEL).c $(HEADERS) $(BITMAP_HEADER)
+$(OSD_TEST): tests/osd_test.c src/rtd/osd.c panels/$(PANEL).c $(HEADERS) $(BITMAP_HEADER) Makefile
 	@mkdir -p $(dir $@)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Iboards/$(BOARD) $< src/rtd/osd.c panels/$(PANEL).c -o $@
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Iboards/$(BOARD) -I$(OUT)/generated $< src/rtd/osd.c panels/$(PANEL).c -o $@

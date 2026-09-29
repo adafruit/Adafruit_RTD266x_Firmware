@@ -8,7 +8,7 @@
 #else
 #define OSD_CODE
 #endif
-#include "../../assets/splash_bitmap.h"
+#include "splash_bitmap.h"
 
 /* Realtek RTD2660 register manual, pp. 64-65, 81, 358-359, 383-398.
  * All accesses below are to the common scaler page. The OSD address selects
@@ -18,47 +18,36 @@
 #define OSD_FONT_BASE 0x0100
 #define OSD_SRAM 0x1000
 #define OSD_ALL_BYTES 0xc000
-#define BITMAP_STRIDE ((SPLASH_BITMAP_WIDTH + 7u) / 8u)
 #define TILE_COLUMNS ((SPLASH_BITMAP_WIDTH + 11u) / 12u)
 #define TILE_ROWS ((SPLASH_BITMAP_HEIGHT + 17u) / 18u)
 #define TILE_COUNT (TILE_COLUMNS * TILE_ROWS)
-#define BITMAP_PAD_X ((TILE_COLUMNS * 12u - SPLASH_BITMAP_WIDTH) / 2u)
-#define BITMAP_PAD_Y ((TILE_ROWS * 18u - SPLASH_BITMAP_HEIGHT) / 2u)
+#define TILE_WORDS (9u * SPLASH_BITMAP_BPP)
 #define SPLASH_WIDTH (TILE_COLUMNS * 12u * 4u)
 #define SPLASH_HEIGHT (TILE_ROWS * 18u * 4u)
 
 #if SPLASH_BITMAP_WIDTH == 0 || SPLASH_BITMAP_HEIGHT == 0
 #error Splash bitmap dimensions must be nonzero
 #endif
+#if SPLASH_BITMAP_BPP != 1 && SPLASH_BITMAP_BPP != 4
+#error Splash bitmap must use one or four bits per pixel
+#endif
+#if SPLASH_PALETTE_COLORS < 2 || SPLASH_PALETTE_COLORS > 16
+#error Splash palette must contain between two and sixteen entries
+#endif
 /* Map entries and tile data must not overlap or use the extended SRAM bank.
- * This driver uses eight-bit tile IDs and a fixed 4x display scale.
+ * This driver uses a fixed 4x display scale. LUT tiles use seven-bit IDs.
  */
 #if TILE_ROWS >= OSD_MAP_BASE || TILE_COUNT > OSD_FONT_BASE - OSD_MAP_BASE
 #error Splash bitmap does not fit the OSD map
 #endif
-#if OSD_FONT_BASE + TILE_COUNT * 9u > 4096u
+#if SPLASH_BITMAP_BPP == 4 && TILE_COUNT > 128
+#error Color splash exceeds seven-bit tile selectors
+#endif
+#if OSD_FONT_BASE + TILE_COUNT * TILE_WORDS > 4096u
 #error Splash bitmap exceeds the first 12 KiB OSD SRAM bank
 #endif
-_Static_assert(sizeof(splash_bitmap) == BITMAP_STRIDE * SPLASH_BITMAP_HEIGHT,
-               "Splash bitmap dimensions do not match its data");
-
-/* Extract twelve adjacent pixels from the ordinary row-major bitmap.
- * Center it within a whole-tile rectangle; padding stays transparent.
- */
-static uint16_t bitmap_line(uint16_t x, uint16_t y) {
-  uint8_t bit;
-  uint16_t pixels = 0;
-  x -= BITMAP_PAD_X;
-  y -= BITMAP_PAD_Y;
-  for (bit = 0; bit < 12; ++bit, ++x) {
-    pixels <<= 1;
-    if (x < SPLASH_BITMAP_WIDTH && y < SPLASH_BITMAP_HEIGHT &&
-        (splash_bitmap[y * BITMAP_STRIDE + x / 8] & (0x80u >> (x & 7)))) {
-      pixels |= 1;
-    }
-  }
-  return pixels;
-}
+_Static_assert(sizeof(splash_tiles) == TILE_COUNT * TILE_WORDS * 3u,
+               "Splash dimensions do not match the generated tile data");
 
 static void select_word(uint16_t address) {
   /* This small layout stays below the extended SRAM bank at 12 KiB. */
@@ -93,8 +82,8 @@ void osd_hide(void) {
 }
 
 void osd_init(void) {
-  uint8_t tile, row;
-  uint16_t x, y, first, second;
+  uint8_t tile, row, color, channel;
+  uint16_t byte;
 
   osd_hide();
   /* Keep global zoom off until show; disable compression and scrolling.
@@ -118,31 +107,30 @@ void osd_init(void) {
   }
   write_word(OSD_SRAM | TILE_ROWS, 0, 0, 0);
   for (tile = 0; tile < TILE_COUNT; ++tile) {
+#if SPLASH_BITMAP_BPP == 4
+    /* LUT mode: seven-bit tile index; pixel zero selects background zero. */
+    write_word(OSD_SRAM | (OSD_MAP_BASE + tile), 0x90, tile, 0);
+#else
     write_word(OSD_SRAM | (OSD_MAP_BASE + tile), 0x8c, tile, 0x10);
+#endif
   }
 
   select_word(OSD_ALL_BYTES | OSD_SRAM | OSD_FONT_BASE);
-  for (tile = 0; tile < TILE_COUNT; ++tile) {
-    x = (tile % TILE_COLUMNS) * 12u;
-    y = (tile / TILE_COLUMNS) * 18u;
-    for (row = 0; row < 9; ++row) {
-      first = bitmap_line(x, y + row * 2u);
-      second = bitmap_line(x, y + row * 2u + 1u);
-      /* Byte lanes upload low to high (Byte0, Byte1, Byte2). The first
-       * scan line is bits23:12, so it starts in Byte2, not Byte0.
-       * Two consecutive 12-bit scan lines form this 24-bit SRAM word.
-       */
-      rtd_write(0, 0x92, (uint8_t)second);
-      rtd_write(0, 0x92, (uint8_t)((first << 4) | (second >> 8)));
-      rtd_write(0, 0x92, (uint8_t)(first >> 4));
-    }
+  /* Build-time conversion provides complete planes, low palette bit first,
+   * with each 24-bit SRAM word already in low/middle/high byte-lane order.
+   * Upload directly: the 8051 does no image decoding or per-pixel packing.
+   */
+  for (byte = 0; byte < sizeof(splash_tiles); ++byte) {
+    rtd_write(0, 0x92, splash_tiles[byte]);
   }
 
-  /* White at palette entry 1; palette entry 0 is transparent for these tiles. */
-  rtd_write(0, 0x6e, 0x83);
-  rtd_write(0, 0x6f, 255);
-  rtd_write(0, 0x6f, 255);
-  rtd_write(0, 0x6f, 255);
+  /* Palette zero is the transparent background in both tile modes. */
+  rtd_write(0, 0x6e, 0x80);
+  for (color = 0; color < SPLASH_PALETTE_COLORS; ++color) {
+    for (channel = 0; channel < 3; ++channel) {
+      rtd_write(0, 0x6f, splash_palette[color][channel]);
+    }
+  }
   rtd_write(0, 0x6e, 0);
 }
 

@@ -1,3 +1,5 @@
 /build/
+# Former generated location; existing checkouts may still have this file.
+/assets/splash_bitmap.h
 *.pyc
 __pycache__/

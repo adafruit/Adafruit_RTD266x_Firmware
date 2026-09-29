@@ -6,28 +6,45 @@ The asset retains that project's BSD-3-Clause license in
 `LICENSE-adafruit-logo.txt`; the new renderer is MIT licensed.
 
 To customize the splash, edit or replace `assets/splash.bmp`, then run `make`.
-The build automatically converts it to `splash_bitmap.h` before compiling.
-That header is generated: edit the BMP, not the byte array. Conversion happens
-on the build computer; the firmware needs no BMP decoder.
+The build automatically converts it to `build/<variant>/generated/splash_bitmap.h`
+before compiling. That header is generated: edit the BMP, not the byte array.
+Conversion happens on the build computer; the firmware needs no BMP decoder.
 
-Use a BMP between 1x1 and 192x108 pixels. Both monochrome and color BMPs work:
-pixels with grayscale brightness 128 or greater become white, and darker
-pixels show the blue background. There is no dithering or automatic resizing.
-For predictable artwork, use white shapes on black. If you replace the logo,
-retain the appropriate license for your own artwork.
+Alternatively, select another file without replacing the supplied logo:
+
+```sh
+make SPLASH_BMP=path/to/my-logo.bmp
+```
+
+Switching files is detected even when the selected BMP has an older timestamp.
+Running ordinary `make` afterward selects the supplied default again.
+
+Use a BMP between 1x1 and 192x108 pixels. Both monochrome and color BMPs work.
+Pure black (`RGB 0,0,0`) is transparent and shows the blue background. Up to
+15 other colors are preserved exactly; richer images are quantized to 15
+foreground colors without dithering. Single-foreground-color artwork uses
+compact one-bit tiles; multicolor artwork uses four-bit palette tiles. No
+automatic resizing occurs. Retain the appropriate license for your own artwork.
 
 The converter uses Python 3 and Pillow (`pip3 install Pillow`). It can also be
 run directly: `python3 tools/bmp_to_header.py input.bmp output.h`. It preserves
-the output timestamp when the resulting pixels and dimensions are unchanged.
-The generated data is one bit per pixel, MSB first, with byte-padded rows.
-The default bitmap is 704 bytes with an 11-byte stride.
+the output timestamp when the result is unchanged. The generated firmware data
+contains an RGB palette and ready-to-upload OSD tiles. The 8051 does no pixel
+packing during startup. A row-major reference is included only for host tests:
+one-bit pixels are MSB first, and four-bit indices use the high nibble first.
+The default firmware asset is 756 tile bytes plus a six-byte palette.
 
-The driver pads and centers the image within 12x18 tiles and displays those
+The converter pads and centers the image within 12x18 tiles; the driver displays those
 tiles at 4x scale. The supplied logo appears as 328x256 pixels inside a
 336x288 tile rectangle. On the current 800x480 panel, artwork up to 192x108
 pixels fits at that scale. Conversion rejects larger images, and the build
-checks data length and SRAM bounds;
-an image whose scaled tile rectangle exceeds the panel is not shown.
+checks data length and SRAM bounds. The largest color image uses 96 tiles and
+10,368 bytes of dedicated OSD SRAM. An image whose scaled tile rectangle
+exceeds the panel is not shown.
+
+`tests/color_splash.bmp` is a palette-order test chart: transparent/red/green/blue,
+yellow/cyan/magenta/white, gray/maroon/olive/navy, teal/purple/orange/lime. Build it
+with `make SPLASH_BMP=tests/color_splash.bmp` to exercise the color renderer.
 
 The startup background and five-second duration are in `src/app/monitor.c`.
 No vendor bitmap, compressed logo block or runtime decompressor is needed.

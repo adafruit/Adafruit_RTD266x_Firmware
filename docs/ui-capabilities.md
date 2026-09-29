@@ -11,13 +11,16 @@ Adafruit flower and wordmark bitmap. `src/app/monitor.c` holds that screen for
 five seconds before acquiring input video. `src/rtd/video.c` keeps the display clock and
 timing generator running independently of input sync during this interval.
 
-`src/rtd/osd.c` splits a row-major monochrome bitmap into 12x18 tiles and builds
-a row/character map in OSD SRAM. Initialization leaves the bitmap off;
+`tools/bmp_to_header.py` prepares one-bit or four-bit 12x18 tiles during the
+build. `src/rtd/osd.c` uploads those bytes and builds a row/character map in
+OSD SRAM. Initialization leaves the bitmap off;
 `osd_show_splash()` enables it and `osd_hide()` removes it. The application owns
 the full-screen background and handover to video. Initialize the OSD again
 after a scaler reset. Replace `assets/splash.bmp` and rebuild to change the artwork;
 its format, dimensions and license are documented in `assets/README.md`.
-Full-color bitmap loading is not implemented.
+BMP decoding and palette quantization happen automatically during the build.
+There are up to 15 visible colors plus transparent index zero. This uses the
+OSD palette and SRAM, not a full-color framebuffer.
 
 The SRAM port accepts Byte0, Byte1, Byte2 while each glyph's first scan line
 occupies bits 23:12. Before global zoom, horizontal frame delay uses four-pixel
@@ -26,12 +29,25 @@ well as the glyphs. The startup screen can be disabled at build time.
 The supplied 82x64 Adafruit logo is an existing BSD-licensed bitmap, with no
 extracted RTD firmware font or logo. Its pixels are unchanged.
 
-The driver centers the bitmap in a 7x4 tile rectangle, adding one transparent
+The converter centers the bitmap in a 7x4 tile rectangle, adding one transparent
 pixel on each side and four above and below. Each OSD row and the global frame
 request 2x scale, producing a 328x256 logo within a 336x288 rectangle. The
 row map starts at SRAM word zero, character selections at word `0x010`, and
 fonts at word `0x100`; they do not overlap. The 28 tiles occupy 756 bytes of
-dedicated OSD SRAM, not 8051 XRAM. The source bitmap occupies 704 flash bytes.
+dedicated OSD SRAM, not 8051 XRAM. Those tile bytes and a six-byte RGB palette
+are stored in flash. Host tests also receive the original 704-byte row-major
+bitmap; the 8051 build excludes that reference copy.
+
+Four-bit palette tiles occupy 36 words each: four consecutive one-bit planes,
+with palette bit zero first. Each plane uses the same nine-word packing as a
+monochrome tile. A map entry `0x90, tile_index, 0` selects LUT colors and a
+transparent background; its selector is limited to seven bits. At the current
+font base, the lower 12 KiB SRAM bank holds 106 such tiles. The converter's
+192x108 limit requires at most 96 tiles. Frame position and 4x scaling are
+identical in both formats. Planar ordering was derived from bounded reference
+data analysis; the project includes only its own color chart and the attributed
+Adafruit bitmap. The 15-color chart, its transparent gaps, and the low-bit-first
+plane order were checked on the UC-586, followed by return to input video.
 
 ## Hardware capability and verification boundary
 
@@ -39,7 +55,7 @@ dedicated OSD SRAM, not 8051 XRAM. The source bitmap occupies 704 flash bytes.
 | --- | --- | --- |
 | Full-screen startup | Free-running display background plus a centered bitmap | Five-second startup screen; input video is enabled afterward |
 | Text menus | Row and character maps, proportional 12x18 tiles, 16-color palette, transparent background | Minimal splash driver; menu navigation and full font still needed |
-| Small graphic splash | 1-, 2- or 4-bit tiles in dedicated OSD SRAM, with shared palette and window effects | One-bit bitmap loading implemented; replaceable build-time artwork, fixed white foreground and 4x scale |
+| Small graphic splash | 1-, 2- or 4-bit tiles in dedicated OSD SRAM, with shared palette and window effects | Automatic BMP conversion; one-bit or four-bit tiles, 15 visible colors plus transparency, 4x scale |
 | Video brightness | Per-channel RGB additive coefficients, separate from backlight power | Documented, not yet exposed or bench verified |
 | Video contrast | Per-channel RGB multiplicative coefficients | Documented, not yet exposed or bench verified |
 | Backlight level | Six 12-bit PWM channels and multiplexed output pins | UC-586 stock contains PWM1/pin103 adjustment code; physical brightness response unverified |
