@@ -59,7 +59,7 @@ static void set_frame(uint8_t enabled) {
    */
   uint16_t x = (panel.hstart + (panel.width - active_width) / 2 -
                 BOARD_OSD_X_CORRECTION) / 8;
-  uint16_t y = (panel.vstart + (panel.height - active_height) / 2) / 2;
+  uint16_t y = (video_display_vstart() + (panel.height - active_height) / 2) / 2;
   write_word(0, (uint8_t)(y >> 3), (uint8_t)(x >> 2),
              (uint8_t)(((x & 3) << 6) | ((y & 7) << 3) | enabled));
 }
@@ -295,7 +295,7 @@ void osd_show_input(const video_signal_t *signal) {
   uint8_t row, character, y;
   uint16_t top, bottom;
   uint16_t x = (panel.hstart + 16 - BOARD_OSD_X_CORRECTION) / 8;
-  uint16_t position_y = (panel.vstart + 16) / 2;
+  uint16_t position_y = (video_display_vstart() + 16) / 2;
   if (!signal) {
     return;
   }
@@ -363,10 +363,17 @@ void osd_show_input(const video_signal_t *signal) {
   text_next_row();
   switch (signal->error) {
     case VIDEO_GEOMETRY: text_literal("EXPECT 800/640X480"); break;
-    case VIDEO_DIGITAL_TOTAL: text_literal("EXPECT HT 1000/800"); break;
-    case VIDEO_POLARITY: text_literal("EXPECT H- V-"); break;
-    case VIDEO_VERTICAL_TOTAL: text_literal("EXPECT VT 524/525"); break;
-    case VIDEO_LINE_RATE: text_literal("EXPECT H 31.30-31.70KHZ"); break;
+    case VIDEO_DIGITAL_TOTAL: text_literal("EXPECT HT 800/992/1000"); break;
+    case VIDEO_POLARITY:
+      text_literal(signal->htotal == 992 ? "EXPECT H- V+" : "EXPECT H- V-");
+      break;
+    case VIDEO_VERTICAL_TOTAL:
+      text_literal(signal->htotal == 992 ? "EXPECT VT 499/500" : "EXPECT VT 524/525");
+      break;
+    case VIDEO_LINE_RATE:
+      text_literal(signal->htotal == 992 ? "EXPECT H 29.50-30.00KHZ" :
+                                          "EXPECT H 31.30-31.70KHZ");
+      break;
     case VIDEO_ZERO_PERIOD: text_literal("ZERO SYNC PERIOD"); break;
     case VIDEO_ANALOG_TIMEOUT: text_literal("SYNC MEASUREMENT TIMEOUT"); break;
     case VIDEO_ANALOG_OVERFLOW: text_literal("SYNC COUNTER OVERFLOW"); break;

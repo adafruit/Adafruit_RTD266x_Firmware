@@ -33,11 +33,11 @@ static uint8_t input_info_changed(const video_signal_t *signal) {
 
 /* Application policy lives here; register setup belongs to the drivers.
  * Two matching samples acquire a mode. Signal loss blanks immediately.
- * Same-width rate changes without loss are intentionally not tracked yet.
+ * Identify the timing profile as well as width when qualifying a source.
  */
 void main(void) {
   video_signal_t signal;
-  uint16_t displayed_width = 0, candidate_width = 0;
+  uint8_t displayed_mode = VIDEO_MODE_NONE, candidate_mode = VIDEO_MODE_NONE;
   uint8_t matching_samples = 0, screen = 0;
   uint32_t info_started = 0;
 
@@ -72,25 +72,25 @@ void main(void) {
         shown_signal = signal;
         screen = 2;
       }
-      displayed_width = candidate_width = 0;
+      displayed_mode = candidate_mode = VIDEO_MODE_NONE;
       matching_samples = 0;
       mcu_write(0xf2, 3);
-    } else if (signal.width != displayed_width) {
-      if (signal.width != candidate_width) {
-        candidate_width = signal.width;
+    } else if (signal.mode != displayed_mode) {
+      if (signal.mode != candidate_mode) {
+        candidate_mode = signal.mode;
         matching_samples = 1;
       } else if (++matching_samples >= 2) {
         if (video_apply(&signal)) {
           osd_show_input(&signal);
           info_started = platform_millis();
           screen = 3;
-          displayed_width = signal.width;
+          displayed_mode = signal.mode;
           mcu_write(0xf2, 4);
         }
         matching_samples = 0;
       }
     } else {
-      candidate_width = matching_samples = 0;
+      candidate_mode = matching_samples = 0;
     }
     if (screen == 3 &&
         (uint32_t)(platform_millis() - info_started) >= INPUT_INFO_DURATION_MS) {

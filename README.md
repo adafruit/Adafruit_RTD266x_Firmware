@@ -86,8 +86,10 @@ Panel profiles use physical units, leaving register encoding inside the driver.
 There is no dynamic allocation or dependency on a proprietary runtime.
 
 Only the supplied UC-586/800x480 combination is implemented. Video acceptance
-is currently limited to native 800x480 and horizontally stretched 640x480 at
-the documented 60 Hz timings. This is not a generic automatic monitor firmware.
+supports native 800x480 at 1000x525 timing, PicoDVI's alternate 800x480 at
+992x500 timing, and horizontally stretched 640x480 at 800x525 timing. All are
+near 60 Hz. These are explicit timing profiles, not arbitrary mode detection;
+see the [timing contract](docs/video-registers.md#supported-timing-contract).
 
 ## Display controls
 
@@ -142,7 +144,8 @@ tail is not linked into the new program and is not a settings-storage area.
 ## Validation status
 
 On 2026-09-29, the fresh implementation displayed native 800x480 text and grids,
-expanded 640x480 text and grids to the full panel, blanked on signal loss, and
+aligned the alternate 992x500-total 800x480 grid, expanded 640x480 text and grids
+to the full panel, displayed the no-signal test card on signal loss, and
 reacquired native video when the source returned. The full-screen startup
 background and centered bitmap were verified after a whole-chip reset with
 the source enabled and disabled, followed by handover to video. These checks
@@ -159,9 +162,9 @@ including a binary/map check that all six interrupt vectors reach the linked
 handlers and a pixel-by-pixel reconstruction of the bitmap from OSD writes.
 BMP tests cover color preservation, palette reduction, transparent black,
 row/tile/plane ordering, size limits and unchanged generated output.
-The current default build uses 27,530 bytes of flash and 167 bytes
+The current default build uses 28,864 bytes of flash and 170 bytes
 of XRAM; its 64 KiB bank0 SHA256 is
-`74dc5c69488b7a69bd52be3c80a1c649bf6a0b65d846b54408ddbd16696eee2a`.
+`45e69ad5e5d9a7aed121b844e2738cec13ede3e31e7c8695695d69bf6a74adc3`.
 Programming verified all 512 KiB and restored the original protection byte
 `0x0C`. Builds, code and register notes are provided; stock firmware dumps and
 the preserved original flash tail are not distributed.

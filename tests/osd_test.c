@@ -19,6 +19,11 @@ static uint8_t regs[256], frame[16][3], sram[4096][3];
 static uint8_t written[4096][3], palette[48];
 static uint16_t address;
 static unsigned lane, palette_bytes;
+static uint16_t runtime_vstart = 32;
+
+uint16_t video_display_vstart(void) {
+  return runtime_vstart;
+}
 
 uint8_t rtd_read(uint8_t page, uint8_t reg) {
   assert(page == 0);
@@ -158,8 +163,8 @@ static void check_asset(void (*show)(void), const char *name,
          panel.hstart + (panel.width - width * 4) / 2);
   assert(panel.hstart + (panel.width - width * 4) / 2 -
          (x_delay * 8 + BOARD_OSD_X_CORRECTION) < 8);
-  assert(y_delay * 2 <= panel.vstart + (panel.height - height * 4) / 2);
-  assert(panel.vstart + (panel.height - height * 4) / 2 - y_delay * 2 < 2);
+  assert(y_delay * 2 <= runtime_vstart + (panel.height - height * 4) / 2);
+  assert(runtime_vstart + (panel.height - height * 4) / 2 - y_delay * 2 < 2);
 
   printf("OSD %s %u-bpp bitmap, palette, padding, layout and position passed "
          "(%u differing scanline comparisons)\n", name, bpp, differing_pairs);
@@ -234,7 +239,7 @@ static void check_input(const video_signal_t *signal,
   x_delay = ((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6);
   y_delay = ((unsigned)frame[0][0] << 3) | ((frame[0][2] >> 3) & 7);
   assert(x_delay == (panel.hstart + 16u - BOARD_OSD_X_CORRECTION) / 8u);
-  assert(y_delay == (panel.vstart + 16u) / 2u);
+  assert(y_delay == (runtime_vstart + 16u) / 2u);
 }
 
 static void check_input_messages(void) {
@@ -255,9 +260,15 @@ static void check_input_messages(void) {
   };
   const char *timing[5] = {
     "UNSUPPORTED INPUT", "800X480 60.1HZ", "H 31.50KHZ H+ V+",
-    "TOTAL 999X524", "EXPECT HT 1000/800"
+    "TOTAL 999X524", "EXPECT HT 800/992/1000"
   };
-  unsigned row;
+  const uint8_t cvt_errors[] = {VIDEO_POLARITY, VIDEO_VERTICAL_TOTAL, VIDEO_LINE_RATE};
+  const char *reasons[][2] = {
+    {"EXPECT H- V-", "EXPECT H- V+"},
+    {"EXPECT VT 524/525", "EXPECT VT 499/500"},
+    {"EXPECT H 31.30-31.70KHZ", "EXPECT H 29.50-30.00KHZ"}
+  };
+  unsigned row, mode;
   signal.width = signal.input_width = 800;
   signal.height = signal.input_height = 480;
   signal.htotal = 1000;
@@ -265,6 +276,8 @@ static void check_input_messages(void) {
   signal.line_hz = 31500;
   signal.measured = VIDEO_MEASURE_GEOMETRY | VIDEO_MEASURE_TIMING;
   check_input(&signal, valid, text);
+  runtime_vstart = 10;
+  check_input(&signal, valid, text); /* Runtime CVT origin, not panel default32. */
   signal.line_hz = 432000000UL;
   signal.vtotal = 1;
   check_input(&signal, extreme, text); /* Multiplication by ten would overflow. */
@@ -281,6 +294,15 @@ static void check_input_messages(void) {
   signal.input_width = 800;
   signal.htotal = 999;
   check_input(&signal, timing, text);
+  for (mode = 0; mode < 2; ++mode) {
+    signal.htotal = mode ? 992 : 1000;
+    for (row = 0; row < 3; ++row) {
+      const char *expected[5] = {NULL, NULL, NULL, NULL, reasons[row][mode]};
+      signal.error = cvt_errors[row];
+      check_input(&signal, expected, text);
+    }
+  }
+  signal.htotal = 999;
 
   /* Digital geometry can be fresh even when analog timing timed out. */
   signal.error = VIDEO_ANALOG_TIMEOUT;
@@ -308,6 +330,7 @@ static void check_input_messages(void) {
     assert(!strstr(text[row], "H+") && !strstr(text[row], "V+"));
   }
   check_input(&signal, NULL, text); /* Repeat a status without leaking SRAM. */
+  runtime_vstart = 32;
   puts("OSD input text, font, palette, rejection and stale-measurement checks passed");
 }
 

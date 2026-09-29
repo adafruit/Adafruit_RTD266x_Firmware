@@ -67,12 +67,38 @@ enum {
   HDMI_PORT = 0xc9
 };
 
+#ifdef __SDCC_mcs51
+#define VIDEO_CODE __code
+#else
+#define VIDEO_CODE
+#endif
+
+/* Qualified source timings, not a general mode solver. CVT timing is from
+ * PicoDVI's 800x480p60 definition; all active heights are 480 lines. */
+typedef struct {
+  uint16_t width, htotal, vtotal;
+  uint16_t capture_x, capture_y, display_y;
+  uint16_t minimum_line_hz, maximum_line_hz;
+  uint8_t polarity, frame_lines, frame_clocks;
+} input_mode_t;
+
+static const VIDEO_CODE input_mode_t input_modes[] = {
+  {640, 800, 525, 142, 35, 32, 31300, 31700, 0, 5, 44},
+  {800, 1000, 525, 86, 32, 32, 31300, 31700, 0, 2, 40},
+  {800, 992, 500, 166, 17, 10, 29500, 30000, 2, 9, 40}
+};
+static uint16_t display_vstart;
+
+uint16_t video_display_vstart(void) {
+  return display_vstart;
+}
+
 static void timing_word(uint8_t index, uint16_t value) {
   rtd_indirect_write(0, TIMING_PORT, index, (uint8_t)(value >> 8));
   rtd_indirect_write(0, TIMING_PORT, index + 1, (uint8_t)value);
 }
 
-/* This first driver deliberately supports the 31.5 MHz panel clock family.
+/* This driver supports the 29.5..31.7 MHz output-clock families below.
  * The UC-586 measurements require an additional divide-by-two relative to
  * the RTD2660 manual's PLL example. N=8 and output divisor=4 therefore give
  * one M step of 27 MHz / 64 = 421875 Hz. See docs/video-registers.md.
@@ -83,7 +109,7 @@ static uint8_t output_clock(uint32_t hz) {
   uint16_t correction;
   uint32_t base;
 
-  if (hz < 30000000UL || hz > 33000000UL)
+  if (hz < 29500000UL || hz > 33000000UL)
     return 0;
   multiplier = (uint8_t)(hz / 421875UL);
   base = 421875UL * multiplier;
@@ -109,10 +135,12 @@ static uint8_t output_clock(uint32_t hz) {
   return 1;
 }
 
-static void panel_timing(void) {
+static void panel_timing(uint16_t vtotal, uint16_t vstart) {
   uint16_t left = panel.hstart - 10;
   uint16_t right = left + panel.width;
-  uint16_t bottom = panel.vstart + panel.height;
+  uint16_t bottom = vstart + panel.height;
+
+  display_vstart = vstart;
 
   /* Manual pp31-34: total counts four early; horizontal edges ten early. */
   timing_word(0x00, panel.htotal - 4);
@@ -121,18 +149,18 @@ static void panel_timing(void) {
   timing_word(0x05, left);
   timing_word(0x07, right);
   timing_word(0x09, right);
-  timing_word(0x0b, panel.vtotal);
+  timing_word(0x0b, vtotal);
   rtd_indirect_write(0, TIMING_PORT, 0x0d, panel.vsync);
-  timing_word(0x0e, panel.vstart);
-  timing_word(0x10, panel.vstart);
+  timing_word(0x0e, vstart);
+  timing_word(0x10, vstart);
   timing_word(0x12, bottom);
   timing_word(0x14, bottom);
 
   rtd_write(0, DISPLAY_POLARITY, 0x06); /* Negative HS/VS, positive DE. */
   rtd_write(0, DISPLAY, 0xa3); /* Single RGB888, background, free-running. */
   rtd_write(1, LAST_LINE_HIGH,
-            (uint8_t)(((panel.htotal >> 8) << 4) | (panel.vtotal >> 8)));
-  rtd_write(1, LAST_LINE_V, (uint8_t)panel.vtotal);
+            (uint8_t)(((panel.htotal >> 8) << 4) | (vtotal >> 8)));
+  rtd_write(1, LAST_LINE_V, (uint8_t)vtotal);
   rtd_write(1, LAST_LINE_H, (uint8_t)panel.htotal);
 
   rtd_indirect_write(0, OUTPUT_PORT, 0x00, 0x00); /* TTL output. */
@@ -195,7 +223,7 @@ void video_init(void) {
   rtd_update(0, HOST, 0x07, 0);
   rtd_write(1, M2_POWER, 0);
   output_clock(panel.clock_hz);
-  panel_timing();
+  panel_timing(panel.vtotal, panel.vstart);
   rtd_write(0, GAMMA, 0);
   rtd_write(0, DITHER, 0);
   linear_filter();
@@ -238,12 +266,15 @@ uint8_t video_measure(video_signal_t *signal) {
   uint32_t line_hz;
   uint8_t status;
   uint8_t polarity;
+  uint8_t mode_index = 0;
+  const VIDEO_CODE input_mode_t *mode = &input_modes[1];
 
   if (!signal)
     return 0;
   signal->width = signal->height = 0;
   signal->output_clock_hz = 0;
   signal->error = VIDEO_OK;
+  signal->mode = VIDEO_MODE_NONE;
   signal->input_width = signal->input_height = 0;
   signal->htotal = signal->vtotal = 0;
   signal->line_hz = 0;
@@ -268,8 +299,14 @@ uint8_t video_measure(video_signal_t *signal) {
   signal->measured = VIDEO_MEASURE_GEOMETRY;
   if ((width != 800 && width != 640) || signal->detail[2] != 480) {
     signal->error = VIDEO_GEOMETRY;
-  } else if (total != (width == 640 ? 800 : 1000)) {
-    signal->error = VIDEO_DIGITAL_TOTAL;
+  } else {
+    for (mode_index = 0; mode_index < 3; ++mode_index) {
+      mode = &input_modes[mode_index];
+      if (width == mode->width && total == mode->htotal)
+        break;
+    }
+    if (mode_index == 3)
+      signal->error = VIDEO_DIGITAL_TOTAL;
   }
 
   /* Unsupported geometry still deserves a useful measured timing report.
@@ -297,11 +334,11 @@ uint8_t video_measure(video_signal_t *signal) {
   signal->measured |= VIDEO_MEASURE_TIMING;
   if (signal->error)
     return 0;
-  if (polarity) {
+  if (polarity != mode->polarity) {
     signal->error = VIDEO_POLARITY;
     return 0;
   }
-  if (total != 524 && total != 525) {
+  if (total != mode->vtotal - 1 && total != mode->vtotal) {
     signal->error = VIDEO_VERTICAL_TOTAL;
     return 0;
   }
@@ -310,7 +347,7 @@ uint8_t video_measure(video_signal_t *signal) {
     return 0;
   }
   /* 27 MHz crystal, 16-line average. */
-  if (line_hz < 31300UL || line_hz > 31700UL) {
+  if (line_hz < mode->minimum_line_hz || line_hz > mode->maximum_line_hz) {
     signal->error = VIDEO_LINE_RATE;
     return 0;
   }
@@ -320,14 +357,15 @@ uint8_t video_measure(video_signal_t *signal) {
    */
   signal->output_clock_hz = line_hz * panel.htotal +
       ((432000000UL % period) * panel.htotal) / period;
-  if (signal->output_clock_hz < 31300000UL ||
-      signal->output_clock_hz > 31700000UL) {
+  if (signal->output_clock_hz < (uint32_t)mode->minimum_line_hz * panel.htotal ||
+      signal->output_clock_hz > (uint32_t)mode->maximum_line_hz * panel.htotal) {
     signal->output_clock_hz = 0;
     signal->error = VIDEO_LINE_RATE;
     return 0;
   }
   signal->width = width;
   signal->height = 480;
+  signal->mode = mode_index + 1;
   return 1;
 }
 
@@ -344,20 +382,27 @@ static void scale_factor(uint32_t factor) {
 
 uint8_t video_apply(const video_signal_t *signal) {
   uint8_t scaled;
+  const VIDEO_CODE input_mode_t *mode;
 
-  if (!signal || signal->height != 480 ||
-      (signal->width != 640 && signal->width != 800) ||
-      signal->output_clock_hz < 31300000UL ||
-      signal->output_clock_hz > 31700000UL)
+  if (!signal || signal->mode < VIDEO_MODE_VGA || signal->mode > VIDEO_MODE_CVT)
+    return 0;
+  mode = &input_modes[signal->mode - 1];
+  if (signal->height != 480 || signal->width != mode->width ||
+      signal->output_clock_hz < (uint32_t)mode->minimum_line_hz * panel.htotal ||
+      signal->output_clock_hz > (uint32_t)mode->maximum_line_hz * panel.htotal)
     return 0;
   scaled = signal->width == 640;
   video_blank(1);
   if (!output_clock(signal->output_clock_hz))
     return 0;
+  panel_timing(mode->vtotal, mode->display_y);
 
   rtd_update(0, INPUT, 0x02, 0); /* Sync-relative capture, not DE window. */
-  capture_word(CAPTURE_X, scaled ? 142 : 86);
-  capture_word(CAPTURE_Y, scaled ? 35 : 32);
+  /* Normalize each source's sync pulses before applying its capture window. */
+  rtd_update(0, INPUT_POLARITY, 0x0c,
+             (mode->polarity & 1 ? 0 : 0x04) | (mode->polarity & 2 ? 0 : 0x08));
+  capture_word(CAPTURE_X, mode->capture_x);
+  capture_word(CAPTURE_Y, mode->capture_y);
   capture_word(CAPTURE_WIDTH, signal->width);
   capture_word(CAPTURE_HEIGHT, signal->height);
   rtd_update(0, CAPTURE_DELAY_HIGH, 0x03, 0);
@@ -377,8 +422,8 @@ uint8_t video_apply(const video_signal_t *signal) {
   /* Empirical register codes from aligned grid tests, not a general timing
    * solver. The manual's CR41 formula and earlier clock labels disagree.
    */
-  rtd_write(0, FRAME_LINES, scaled ? 5 : 2);
-  rtd_write(0, FRAME_CLOCKS, scaled ? 44 : 40);
+  rtd_write(0, FRAME_LINES, mode->frame_lines);
+  rtd_write(0, FRAME_CLOCKS, mode->frame_clocks);
   rtd_update(6, 0xe3, 0x13, 0); /* Downscaler and extended buffer off. */
   rtd_update(6, 0xe4, 0x0c, 0); /* Downscaler buffer bypass. */
   video_blank(0);
@@ -390,6 +435,12 @@ void video_blank(uint8_t blank) {
    * Once capture is configured, select frame sync and incoming video together.
    */
   rtd_update(0, DISPLAY, 0x28, blank ? 0x20 : 0x08);
+  if (blank && display_vstart != panel.vstart) {
+    /* Restore the full-height startup/no-signal raster once when leaving
+     * short-blanking input. OSD positioning follows this output origin. */
+    output_clock(panel.clock_hz);
+    panel_timing(panel.vtotal, panel.vstart);
+  }
 }
 
 void video_background(uint8_t red, uint8_t green, uint8_t blue) {

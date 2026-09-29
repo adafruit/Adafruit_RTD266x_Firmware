@@ -93,6 +93,127 @@ static void fixture(uint16_t width, uint16_t period) {
   stalled = 0;
 }
 
+static void cvt_fixture(uint16_t period, uint16_t vtotal) {
+  fixture(800, period);
+  measurement[1][0] = 3;
+  measurement[1][1] = 223; /* 991: 992-clock input total. */
+  measurement[0][2] = 0x80 | (uint8_t)(vtotal >> 8);
+  measurement[0][3] = (uint8_t)vtotal;
+}
+
+static uint32_t pll_estimate(void) {
+  uint32_t base = 421875UL * (registers[1][0xbf] + 2);
+  uint16_t offset = ((uint16_t)registers[1][0xc4] << 8) | registers[1][0xc5];
+  assert(offset <= 4095);
+  return base + (uint32_t)((uint64_t)base * offset / 32768);
+}
+
+static void assert_vertical(uint16_t total, uint16_t start) {
+  assert(timing(0x0b) == total);
+  assert(timing(0x0e) == start && timing(0x10) == start);
+  assert(timing(0x12) == start + 480 && timing(0x14) == start + 480);
+  assert((((uint16_t)(registers[1][0xc7] & 15) << 8) |
+          registers[1][0xc8]) == total);
+  assert(video_display_vstart() == start);
+}
+
+static void cvt_profile(void) {
+  video_signal_t signal;
+  video_signal_t forged;
+  uint16_t period;
+  uint16_t total;
+  uint8_t polarity;
+  uint32_t estimate;
+
+  /* Both measured endpoints must configure the physical 500-line frame. */
+  for (total = 499; total <= 500; ++total) {
+    fixture(800, 13714);
+    assert(video_measure(&signal) && signal.mode == VIDEO_MODE_PANEL);
+    assert(video_apply(&signal));
+    assert_vertical(525, 32);
+    cvt_fixture(14501, total);
+    assert(video_measure(&signal) && signal.mode == VIDEO_MODE_CVT);
+    assert(signal.width == 800 && signal.height == 480);
+    assert(signal.htotal == 992 && signal.vtotal == total && signal.polarity == 2);
+    assert(signal.output_clock_hz == (uint32_t)(432000000000ULL / 14501));
+    assert(video_apply(&signal));
+    assert(word(0x14) == 166 && word(0x18) == 17);
+    assert((registers[0][0x11] & 0x0c) == 0x04); /* Manual p22: bit2 H, bit3 V. */
+    assert(registers[0][0x40] == 9 && registers[0][0x41] == 40);
+    assert(factor(0) == 0xfffff && factor(1) == 0xfffff);
+    assert_vertical(500, 10);
+    assert((registers[0][0x28] & 0xa8) == 0x88);
+
+    /* Invalid profile identifiers and profile/geometry mismatches do not
+     * alter the currently displayed source. */
+    forged = signal;
+    forged.mode = VIDEO_MODE_NONE;
+    assert(!video_apply(&forged));
+    forged.mode = 255;
+    assert(!video_apply(&forged));
+    forged.mode = VIDEO_MODE_VGA;
+    assert(!video_apply(&forged));
+    forged.mode = VIDEO_MODE_PANEL;
+    assert(!video_apply(&forged)); /* CVT clock outside panel profile. */
+    assert_vertical(500, 10);
+    assert(word(0x14) == 166);
+  }
+
+  video_blank(1);
+  assert_vertical(525, 32);
+  assert((registers[0][0x28] & 0xa8) == 0xa0);
+  estimate = pll_estimate();
+  assert(estimate > 31499000UL && estimate < 31501000UL);
+  video_blank(1); /* Repeated no-signal updates preserve the restored raster. */
+  assert_vertical(525, 32);
+
+  cvt_fixture(14501, 500);
+  assert(video_measure(&signal) && video_apply(&signal));
+  fixture(640, 13714);
+  assert(video_measure(&signal) && signal.mode == VIDEO_MODE_VGA);
+  assert(video_apply(&signal));
+  assert_vertical(525, 32);
+  assert(word(0x14) == 142 && word(0x18) == 35);
+  assert((registers[0][0x11] & 0x0c) == 0x0c);
+  assert(factor(0) == 0xccccd);
+
+  /* Independent 64-bit reference includes both accepted clock endpoints
+   * and adjacent rejected periods, including fractional-Hz boundaries. */
+  for (period = 14399; period <= 14645; ++period) {
+    uint32_t expected = (uint32_t)(432000000000ULL / period);
+    uint8_t accepted;
+    cvt_fixture(period, 500);
+    accepted = video_measure(&signal);
+    assert(accepted == (expected >= 29500000UL && expected <= 30000000UL));
+    if (accepted) {
+      assert(signal.mode == VIDEO_MODE_CVT && signal.output_clock_hz == expected);
+      assert(video_apply(&signal));
+      estimate = pll_estimate();
+      assert((estimate > expected ? estimate - expected : expected - estimate)
+             < 1000);
+    } else {
+      assert(signal.error == VIDEO_LINE_RATE && signal.mode == VIDEO_MODE_NONE);
+      assert(!signal.width && !signal.height && !signal.output_clock_hz);
+    }
+  }
+  for (polarity = 0; polarity < 4; ++polarity) {
+    if (polarity == 2)
+      continue;
+    cvt_fixture(14501, 500);
+    measurement[0][2] = 1 | (polarity << 6);
+    assert(!video_measure(&signal) && signal.error == VIDEO_POLARITY);
+    assert(signal.mode == VIDEO_MODE_NONE);
+  }
+  for (total = 498; total <= 501; total += 3) {
+    cvt_fixture(14501, total);
+    assert(!video_measure(&signal) && signal.error == VIDEO_VERTICAL_TOTAL);
+  }
+  cvt_fixture(14501, 500);
+  ++measurement[1][1]; /* Similar width/rate is insufficient: total must match. */
+  assert(!video_measure(&signal) && signal.error == VIDEO_DIGITAL_TOTAL);
+  assert(signal.detail[0] == 993 && signal.detail[1] == 800);
+}
+
 static void reject_cases(void) {
   video_signal_t signal;
   static const uint8_t errors[] = {
@@ -270,6 +391,7 @@ int main(void) {
   assert(!video_apply(&signal));
   unsupported_metadata();
   clock_range();
+  cvt_profile();
   reject_cases();
   puts("video: panel encoding, scaling, mode validation and timeout checks passed");
   return 0;

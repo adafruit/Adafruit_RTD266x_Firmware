@@ -16,15 +16,36 @@ HS width 48, VS width 3, active start (88, 32). The hardware encodes total
 horizontal clocks minus four and horizontal output edges minus ten (manual
 pp31–34). The fixed-last-line registers receive the physical 1000/525 totals.
 
-Input is deliberately limited to two measured negative-sync modes near 60 Hz:
+Input is deliberately limited to three timing profiles near 60 Hz:
 
-| Input | Total | Capture start registers | Frame delay register codes |
-| --- | --- | --- | --- |
-| 800x480 | 1000x525 | H=86, V=32 | CR40=2, CR41=40 |
-| 640x480 | 800x525 | H=142, V=35 | CR40=5, CR41=44 |
+| Input | Input total | H/V sync | Capture start registers | Output V total/start | Frame delay register codes |
+| --- | --- | --- | --- | --- | --- |
+| 800x480 native | 1000x525 | -/- | H=86, V=32 | 525/32 | CR40=2, CR41=40 |
+| 640x480 VGA | 800x525 | -/- | H=142, V=35 | 525/32 | CR40=5, CR41=44 |
+| 800x480 PicoDVI CVT | 992x500 | -/+ | H=166, V=17 | 500/10 | CR40=9, CR41=40 |
 
-The capture offsets and frame delay codes produced aligned test grids on the
-earlier UC-586 build. They are empirical calibration, not a general mode solver.
+The alternate timing comes from
+[Adafruit PicoDVI's timing definition](https://github.com/adafruit/PicoDVI/blob/master/src/libdvi/dvi_timing.c):
+H front/sync/back 24/72/96 pixels, V front/sync/back 3/10/7 lines, 29.52 MHz
+nominal pixel clock. Its sync-relative capture starts at H sync+back-2 and
+V sync+back. CR11 bit2 inverts H and bit3 inverts V (manual p22), so CVT uses
+`0x04` in bits3:2;
+the other two profiles use `0x0C`.
+
+Output horizontal total stays at 1000, with its line rate matched to input.
+CVT needs shorter output vertical blanking: start 10/end 490 fits within 500
+lines, whereas the default start 32/end 512 would overrun this input frame.
+Both timing-port totals and page 1 fixed-last-line totals follow the profile.
+Manual p34 says the programmed display V total is a watchdog reference in
+frame-sync mode; actual frames follow input VS. The nine-line frame delay
+keeps roughly the same capture-to-display buffering as the native profile.
+This short-blanking raster is specific to the tested UC-586; it is not a claim
+that every RGB panel supports a 500-line frame. The generic KD50G21 reference
+lists a 513-line minimum for sync mode, separately from its DE-mode timings.
+
+The capture offsets and frame delay codes produced aligned test grids for all
+three profiles on the UC-586 on 2026-09-29. They are empirical calibration, not
+a general mode solver.
 The manual p42 describes CR41 as `16*code + 16` clocks for nonzero codes; older
 bench notes called these `16*code`. The driver preserves the measured register
 codes and makes no stronger claim about the physical delay.
@@ -34,7 +55,9 @@ bounded start/pop-up waits. Digital counters were observed to return one less
 than total/active size on this board. The analog vertical count was 524 or 525
 for the same source. The manual pp48–50 documents the fractional horizontal
 measurement as a 16-line average and its four fractional bits in CR56.
-Both modes must measure 31.3–31.7 kHz with negative HS/VS.
+Native/VGA must measure 31.3–31.7 kHz with negative HS/VS. CVT must measure
+29.5–30.0 kHz with negative HS and positive VS, and accepts vertical counter
+endpoints 499 or 500. Matching resolution alone never selects a profile.
 
 The input-status overlay reports geometry and timing independently of mode
 acceptance. A successful digital measurement retains active dimensions and
@@ -56,8 +79,8 @@ divisor=4, and the board's 27 MHz crystal, each M step is 421875 Hz. The code
 chooses an integer M below the target and applies an upward fractional offset.
 This empirical clock relationship is not a claim about every RTD266x part.
 
-The clock routine accepts only 30–33 MHz, and mode application accepts only the
-narrow supported line-rate range. All firmware arithmetic stays within 32 bits;
+The clock routine accepts only 29.5–33 MHz, and mode application accepts only
+the narrower range for its selected profile. All firmware arithmetic stays within 32 bits;
 the host test compares clock recovery with a 64-bit reference calculation.
 
 ## Receiver and scaling
@@ -97,6 +120,11 @@ Mode application configures capture and scaling before selecting frame sync
 and revealing input pixels. Signal loss returns to the black free-running
 background and shows the independent no-signal bitmap. That asset is uploaded
 only on the transition to missing input and hidden after successful acquisition.
+Leaving the short CVT raster restores the panel's default 525-line timing,
+32-line active origin and 31.5 MHz clock. OSD positioning reads the actual output
+origin, so its top-left status box remains aligned in either raster. The app
+qualifies two matching profile IDs, including switches between the two 800x480
+timings; it does not retune the PLL on every small measured clock fluctuation.
 
 ## Bench diagnostics
 
