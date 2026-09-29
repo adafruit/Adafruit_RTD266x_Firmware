@@ -92,18 +92,25 @@ differential polarity and red/blue lane swaps (page 2 A7=0x6F), selected by its
 board configuration. Automatic HDMI/DVI detection is enabled; HDCP keys are not
 provided. The separate [audio driver](audio.md) handles stereo LPCM.
 
-Horizontal expansion uses the documented 20-bit input/output fraction
-(manual pp38–39), rounded to 0xCCCCD for 640/800. Bypassed axes receive
-0xFFFFF. The full line buffer is enabled, vertical upscaling is bypassed, and
-the downscaler and its auxiliary buffer are bypassed.
+Keep aspect is the default. Both supported widths have 480 active lines, so
+both axes remain at 1:1: 640x480 is centered with 80 black pixels on each side,
+and 800x480 fills the panel. Timing-port indices 0x05/0x07 bound the picture;
+0x03/0x09 retain the full 800-pixel background/DE window (manual p33). Panel
+totals and the OSD origin stay unchanged. Mode application sets the background
+to black. Both bypassed axes receive 0xFFFFF; the full line buffer remains
+enabled, and the downscaler and its auxiliary buffer are bypassed.
+Host checks cover margins, unity factors, black background and transitions
+among the VGA/native/CVT profiles. Physical sidebar alignment is pending.
 
 The new filter is a triangular linear-interpolation kernel generated at startup:
 for `p=0..15`, the stored tap weights are
 `[0, 16+32*p, 1008-32*p, 0]`. Every phase sums to 1024; there are no negative
 lobes. The 4-tap/32-phase interpretation, half-phase alignment, and normalization
 are inferences from numerical inspection of a working filter, not guarantees
-in the manual. A 640x480 grid expanded to the full panel with its border visible
-in the first fresh-firmware bench test. Detailed filter response and color
+in the manual. Earlier firmware used 0xCCCCD for 640/800 horizontal expansion;
+a grid expanded to the full panel with its border visible in the first
+fresh-firmware bench test. The keep-aspect default bypasses this filter.
+Detailed filter response and color
 fidelity have not been characterized.
 The manual p41 specifies 64 stored 12-bit coefficients, low byte first, with
 the other half supplied by symmetry. The new table is loaded into inactive

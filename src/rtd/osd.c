@@ -491,7 +491,7 @@ void osd_show_menu_preview(uint8_t page, uint8_t variant) {
   case OSD_PREVIEW_DISPLAY:
     preview_number("BACKLIGHT", value, "%", variant == 0);
     preview_slider(value);
-    preview_choice("ASPECT", variant == 1 ? "4:3" : "FILL", variant == 1, 0);
+    preview_choice("ASPECT", variant == 1 ? "FILL" : "KEEP", variant == 1, 0);
     preview_choice("ROTATION", "--", 0, 1);
     preview_choice("MIRROR", "--", 0, 1);
     break;

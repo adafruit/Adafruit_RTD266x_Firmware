@@ -87,7 +87,10 @@ There is no dynamic allocation or dependency on a proprietary runtime.
 
 Only the supplied UC-586/800x480 combination is implemented. Video acceptance
 supports native 800x480 at 1000x525 timing, PicoDVI's alternate 800x480 at
-992x500 timing, and horizontally stretched 640x480 at 800x525 timing. All are
+992x500 timing, and centered 640x480 at 800x525 timing. Keep aspect is the
+default: 640x480 stays at 1:1 with 80-pixel black sidebars; 800x480 fills the
+panel. The Display menu preview shows `ASPECT KEEP`, but does not yet switch
+between keep and fill. All supported inputs are
 near 60 Hz. These are explicit timing profiles, not arbitrary mode detection;
 see the [timing contract](docs/video-registers.md#supported-timing-contract).
 
@@ -174,10 +177,9 @@ including a binary/map check that all six interrupt vectors reach the linked
 handlers and a pixel-by-pixel reconstruction of the bitmap from OSD writes.
 BMP tests cover color preservation, palette reduction, transparent black,
 row/tile/plane ordering, size limits and unchanged generated output.
-The current default build uses 34,149 bytes of flash and 185 bytes
-of XRAM; its 64 KiB bank0 SHA256 is
-`aa2cc89d13c5a9e5dc3fb89377d242b4cd5166deae1deafdffd2b316de6c54ed`.
-Programming verified all 512 KiB and restored the original protection byte
+The centered 640x480 default passes host register checks and the SDCC build;
+its physical sidebar alignment still needs a board test. Earlier builds'
+programming verified all 512 KiB and restored the original protection byte
 `0x0C`. Builds, code and register notes are provided; stock firmware dumps and
 the preserved original flash tail are not distributed.
 

@@ -403,7 +403,7 @@ static void check_menu_preview(void) {
         assert(strstr(text[4], "48KHZ") && strstr(text[5], "STEREO"));
       }
       if (page == OSD_PREVIEW_DISPLAY) {
-        assert(strstr(text[3], variant == 1 ? "4:3" : "FILL"));
+        assert(strstr(text[3], variant == 1 ? "FILL" : "KEEP"));
         assert(strstr(text[4], "--") && strstr(text[5], "--"));
         assert(sram[0x10 + 4 * 30 + 22][2] == 0x52);
         assert(sram[0x10 + 5 * 30 + 22][2] == 0x52);

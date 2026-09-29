@@ -58,6 +58,8 @@ selection rows and green/gray slider tracks. The map ends before the font base.
 The variants exercise 0/50/100 percent tracks, mute on/off, alternative aspect
 labels, timeout values and a highlighted Back row. Rotation and mirror show
 gray `--` placeholders because their board controls are not implemented.
+Display starts with `ASPECT KEEP`, matching the video driver's default;
+the `FILL` sample is artwork only and does not change scaling.
 Host checks cover every page/variant, slider endpoints, centering, palette and
 return from the larger menu map to the five-row input overlay.
 

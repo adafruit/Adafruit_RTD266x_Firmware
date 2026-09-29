@@ -21,6 +21,8 @@ static uint32_t now;
 static uint8_t stalled;
 static unsigned indirect_writes;
 static uint8_t checking_avmute;
+static uint8_t background[3];
+static unsigned background_bytes;
 
 uint8_t rtd_read(uint8_t page, uint8_t reg) {
   return registers[page][reg];
@@ -28,6 +30,11 @@ uint8_t rtd_read(uint8_t page, uint8_t reg) {
 
 void rtd_write(uint8_t page, uint8_t reg, uint8_t value) {
   registers[page][reg] = value;
+  if (page == 0 && reg == 0x6c && (value & 0x20)) background_bytes = 0;
+  if (page == 0 && reg == 0x6d) {
+    assert((registers[0][0x6c] & 0x20) && background_bytes < 3);
+    background[background_bytes++] = value;
+  }
   if (page == 0 && reg == 0x52 && (value & 0x60) && !(value & stalled)) {
     memcpy(&registers[0][0x52], measurement[registers[0][0x47] & 1], 8);
   }
@@ -122,6 +129,19 @@ static void assert_vertical(uint16_t total, uint16_t start) {
   assert(video_display_vstart() == start);
 }
 
+static void assert_picture(uint16_t width) {
+  uint16_t margin = (800 - width) / 2;
+  assert(timing(0) + 4 == 1000); /* Panel timing and DE stay full width. */
+  assert(timing(3) + 10 == 88 && timing(9) - timing(3) == 800);
+  assert(timing(5) - timing(3) == margin);
+  assert(timing(9) - timing(7) == margin);
+  assert(timing(7) - timing(5) == width);
+  assert(factor(0) == 0xfffff && factor(1) == 0xfffff);
+  assert((registers[0][0x32] & 0x13) == 0x10);
+  assert(background_bytes == 3);
+  assert(!background[0] && !background[1] && !background[2]);
+}
+
 static void cvt_profile(void) {
   video_signal_t signal;
   video_signal_t forged;
@@ -136,6 +156,7 @@ static void cvt_profile(void) {
     assert(video_measure(&signal) && signal.mode == VIDEO_MODE_PANEL);
     assert(video_apply(&signal));
     assert_vertical(525, 32);
+    assert_picture(800);
     cvt_fixture(14501, total);
     assert(video_measure(&signal) && signal.mode == VIDEO_MODE_CVT);
     assert(signal.width == 800 && signal.height == 480);
@@ -147,6 +168,7 @@ static void cvt_profile(void) {
     assert(registers[0][0x40] == 9 && registers[0][0x41] == 40);
     assert(factor(0) == 0xfffff && factor(1) == 0xfffff);
     assert_vertical(500, 10);
+    assert_picture(800);
     assert((registers[0][0x28] & 0xa8) == 0x88);
 
     /* Invalid profile identifiers and profile/geometry mismatches do not
@@ -180,7 +202,7 @@ static void cvt_profile(void) {
   assert_vertical(525, 32);
   assert(word(0x14) == 142 && word(0x18) == 35);
   assert((registers[0][0x11] & 0x0c) == 0x0c);
-  assert(factor(0) == 0xccccd);
+  assert_picture(640);
 
   /* Independent 64-bit reference includes both accepted clock endpoints
    * and adjacent rejected periods, including fractional-Hz boundaries. */
@@ -406,6 +428,7 @@ int main(void) {
   assert(signal.width == 800 && signal.height == 480);
   assert(signal.output_clock_hz == (uint32_t)(432000000000ULL / 13714));
   assert(video_apply(&signal));
+  assert_picture(800);
   assert(word(0x14) == 86 && word(0x18) == 32);
   assert(word(0x16) == 800 && word(0x1a) == 480);
   assert(registers[0][0x16] & 8); /* Capture-width write preserves TMDS path. */
@@ -422,8 +445,8 @@ int main(void) {
   measurement[0][3] = 13; /* The alternate 525-line endpoint also works. */
   assert(video_measure(&signal) && video_apply(&signal));
   assert(word(0x14) == 142 && word(0x18) == 35);
-  assert(word(0x16) == 640 && factor(0) == 0xccccd);
-  assert((registers[0][0x32] & 0x13) == 0x11);
+  assert(word(0x16) == 640);
+  assert_picture(640);
   assert(registers[0][0x40] == 5 && registers[0][0x41] == 44);
 
   signal.output_clock_hz = UINT32_MAX;

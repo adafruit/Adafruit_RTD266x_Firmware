@@ -402,7 +402,7 @@ static void scale_factor(uint32_t factor) {
 }
 
 uint8_t video_apply(const video_signal_t *signal) {
-  uint8_t scaled;
+  uint16_t left;
   const VIDEO_CODE input_mode_t *mode;
 
   if (!signal || signal->mode < VIDEO_MODE_VGA || signal->mode > VIDEO_MODE_CVT)
@@ -412,11 +412,18 @@ uint8_t video_apply(const video_signal_t *signal) {
       signal->output_clock_hz < (uint32_t)mode->minimum_line_hz * panel.htotal ||
       signal->output_clock_hz > (uint32_t)mode->maximum_line_hz * panel.htotal)
     return 0;
-  scaled = signal->width == 640;
   video_blank(1);
   if (!output_clock(signal->output_clock_hz))
     return 0;
   panel_timing(mode->vtotal, mode->display_y);
+  /* Keep aspect: all admitted sources are 480 lines, so both axes stay 1:1.
+   * Narrow the picture window only; the background/DE remains full panel.
+   * VGA therefore has 80 black pixels on each side (manual p33).
+   */
+  left = panel.hstart - 10 + (panel.width - signal->width) / 2;
+  timing_word(0x05, left);
+  timing_word(0x07, left + signal->width);
+  video_background(0, 0, 0);
 
   rtd_update(0, INPUT, 0x02, 0); /* Sync-relative capture, not DE window. */
   /* Normalize each source's sync pulses before applying its capture window. */
@@ -435,10 +442,10 @@ uint8_t video_apply(const video_signal_t *signal) {
   rtd_indirect_write(0, FIFO_PORT, 2, (uint8_t)signal->height);
 
   rtd_write(0, SCALE_PORT, 0x80);
-  scale_factor(scaled ? 0xccccdUL : 0xfffffUL);
+  scale_factor(0xfffffUL);
   scale_factor(0xfffffUL);
   rtd_write(0, SCALE_PORT, 0);
-  rtd_update(0, SCALE, 0x13, scaled ? 0x11 : 0x10);
+  rtd_update(0, SCALE, 0x13, 0x10); /* Full line buffer, both axes bypassed. */
   rtd_update(0, FRAME_CONTROL, 0x02, 0);
   /* Empirical register codes from aligned grid tests, not a general timing
    * solver. The manual's CR41 formula and earlier clock labels disagree.
