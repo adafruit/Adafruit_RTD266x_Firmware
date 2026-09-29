@@ -54,6 +54,8 @@ typedef struct {
 } video_signal_t;
 
 void video_init(void);
+/* Service HDMI AVMute while an accepted video mode is active. */
+void video_service(void);
 /* Returns zero for absent, timed-out, or unsupported input. */
 uint8_t video_measure(video_signal_t *signal);
 uint8_t video_apply(const video_signal_t *signal);

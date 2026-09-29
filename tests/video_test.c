@@ -19,6 +19,8 @@ static uint8_t coefficients[128];
 static unsigned coefficient_count;
 static uint32_t now;
 static uint8_t stalled;
+static unsigned indirect_writes;
+static uint8_t checking_avmute;
 
 uint8_t rtd_read(uint8_t page, uint8_t reg) {
   return registers[page][reg];
@@ -48,6 +50,9 @@ uint8_t rtd_indirect_read(uint8_t page, uint8_t reg, uint8_t index) {
 }
 
 void rtd_indirect_write(uint8_t page, uint8_t reg, uint8_t index, uint8_t value) {
+  if (checking_avmute && page == 2 && reg == 0xc9 && index == 0x30)
+    assert(!(ports[2][0xc9][0x31] & 0x80));
+  ++indirect_writes;
   ports[page][reg][index] = value;
 }
 
@@ -331,6 +336,40 @@ static void clock_range(void) {
   }
 }
 
+static void avmute_recovery(void) {
+  unsigned before;
+  checking_avmute = 1;
+  ports[2][0xc9][0x30] = 0xef; /* Audio enabled; unrelated bits populated. */
+  ports[2][0xc9][0x31] = 0xb6;
+  registers[2][0xcb] = 0x41; /* HDMI Set_AVMute. */
+  before = indirect_writes;
+  video_service();
+  assert(ports[2][0xc9][0x30] == 0xe7);
+  assert(ports[2][0xc9][0x31] == 0xb6);
+  assert(indirect_writes == before + 3);
+  before = indirect_writes;
+  video_service();
+  assert(indirect_writes == before);
+
+  registers[2][0xcb] = 1; /* HDMI Clear_AVMute. */
+  video_service();
+  assert(ports[2][0xc9][0x30] == 0xef);
+  assert(ports[2][0xc9][0x31] == 0xb6);
+  before = indirect_writes;
+  video_service();
+  assert(indirect_writes == before);
+
+  registers[2][0xcb] = 0x40; /* DVI ignores stale HDMI AVMute status. */
+  ports[2][0xc9][0x30] = 0xe7;
+  ports[2][0xc9][0x31] = 0x36; /* Preserve an already disabled watchdog. */
+  before = indirect_writes;
+  video_service();
+  assert(ports[2][0xc9][0x30] == 0xef);
+  assert(ports[2][0xc9][0x31] == 0x36);
+  assert(indirect_writes == before + 1);
+  checking_avmute = 0;
+}
+
 int main(void) {
   video_signal_t signal;
   unsigned phase;
@@ -393,6 +432,7 @@ int main(void) {
   clock_range();
   cvt_profile();
   reject_cases();
+  avmute_recovery();
   puts("video: panel encoding, scaling, mode validation and timeout checks passed");
   return 0;
 }

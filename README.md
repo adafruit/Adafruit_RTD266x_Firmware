@@ -73,8 +73,8 @@ operation. See [diagnostic decoding](docs/video-registers.md#bench-diagnostics).
 | `boards/` | Pin routing, buttons, backlight and other board wiring |
 | `panels/` | Physical pixel and line timings |
 | `src/platform/` | 8051 startup, timer, scaler gateway and EDID SRAM access |
-| `src/rtd/` | Video acquisition, clock/scaler configuration, EDID generation and OSD |
-| `src/app/` | Firmware policy: acquire video, handle loss and show a splash |
+| `src/rtd/` | Video and audio acquisition, clocks, scaling, EDID and OSD |
+| `src/app/` | Firmware policy: acquire inputs, handle loss and show a splash |
 | `include/rtd/` | Small interfaces between those layers |
 | `assets/` | Editable startup and no-signal BMPs, with artwork attribution |
 | `tools/` | Build-time BMP palette conversion |
@@ -102,12 +102,17 @@ Brightness/contrast adjust the video pixels; backlight control adjusts the
 panel light. Shipped RTD2660H boards demonstrate whole-screen 180-degree
 rotation and mirroring, but the mechanism and available modes are board
 dependent. See the [capability and firmware-analysis notes](docs/ui-capabilities.md).
-Audio, a complete menu, settings persistence and arbitrary video modes are not
-implemented in this first version.
+The first audio profile implements stereo 48 kHz LPCM through the UC-586's
+CS4334 DAC. See [audio support and validation](docs/audio.md) for its current
+bench status and limits. A complete menu, settings persistence, audio volume
+controls and arbitrary video modes are not implemented.
 
 ## Programming
 
 Use the [Feather DVI tester/programmer](https://github.com/adafruit/Adafruit_Arduino_Tester_Code/pull/23).
+Its RP2350 HSTX variant supports both HDMI audio testing and programming through
+the same connected HDMI cable. Select `mode off` before programming and return
+to `mode 640` afterward; mode changes reboot the Feather.
 Save matching complete reads of your own board's original flash and preserve
 its protection state before programming. The tested UC-586 has a W25X40
 (`EF3013`) with 512 KiB of flash. Other boards can have different flash and pins.
@@ -162,9 +167,15 @@ including a binary/map check that all six interrupt vectors reach the linked
 handlers and a pixel-by-pixel reconstruction of the bitmap from OSD writes.
 BMP tests cover color preservation, palette reduction, transparent black,
 row/tile/plane ordering, size limits and unchanged generated output.
-The current default build uses 28,864 bytes of flash and 170 bytes
+The current default build uses 31,970 bytes of flash and 183 bytes
 of XRAM; its 64 KiB bank0 SHA256 is
-`45e69ad5e5d9a7aed121b844e2738cec13ede3e31e7c8695695d69bf6a74adc3`.
+`cfe76d26529bca1022987db2805220712bf995cb695b6c7da1e248e9abcf6c22`.
 Programming verified all 512 KiB and restored the original protection byte
 `0x0C`. Builds, code and register notes are provided; stock firmware dumps and
 the preserved original flash tail are not distributed.
+
+The RP2350 HSTX audio test confirmed a clean 1 kHz analog tone from the UC-586
+headphone jack, muting on source loss and recovery with video. Splash, no-signal
+artwork and the scaled grid remained visible. The input timing overlay did not
+appear in this run's captures and needs further investigation. See the
+[audio measurements and limits](docs/audio.md#validation).

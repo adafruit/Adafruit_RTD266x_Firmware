@@ -16,7 +16,7 @@ endif
 
 SOURCES := src/platform/io.c src/platform/mcs51.c src/platform/ddc.c \
            src/platform/diagnostics.c \
-           src/rtd/edid.c src/rtd/video.c src/rtd/osd.c \
+           src/rtd/edid.c src/rtd/video.c src/rtd/osd.c src/rtd/audio.c \
            boards/$(BOARD)/board.c panels/$(PANEL).c src/app/$(APP).c
 OBJECTS := $(patsubst %.c,$(OUT)/%.rel,$(SOURCES))
 HEADERS := $(wildcard include/rtd/*.h boards/$(BOARD)/*.h)
@@ -53,10 +53,11 @@ $(OUT)/firmware.ihx: $(OBJECTS)
 $(OUT)/firmware.bin: $(OUT)/firmware.ihx
 	makebin -s 65536 $< $@
 
-check: firmware build/tests/edid_test build/tests/video_test $(OSD_TEST)
+check: firmware build/tests/edid_test build/tests/video_test build/tests/audio_test $(OSD_TEST)
 	python3 tests/bitmap_test.py
 	build/tests/edid_test
 	build/tests/video_test
+	build/tests/audio_test
 	$(OSD_TEST)
 
 build/tests/edid_test: tests/edid_test.c src/rtd/edid.c panels/$(PANEL).c $(HEADERS)
@@ -66,6 +67,10 @@ build/tests/edid_test: tests/edid_test.c src/rtd/edid.c panels/$(PANEL).c $(HEAD
 build/tests/video_test: tests/video_test.c src/rtd/video.c $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Iboards/$(BOARD) $< src/rtd/video.c -o $@
+
+build/tests/audio_test: tests/audio_test.c src/rtd/audio.c $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Iboards/$(BOARD) $< src/rtd/audio.c -o $@
 
 $(OSD_TEST): tests/osd_test.c src/rtd/osd.c panels/$(PANEL).c $(HEADERS) $(BITMAP_HEADER) $(NO_SIGNAL_HEADER) Makefile
 	@mkdir -p $(dir $@)

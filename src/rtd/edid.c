@@ -13,7 +13,7 @@ static void text_descriptor(uint8_t *bytes, uint8_t type, const char *text) {
   while (i < 13) bytes[5 + i++] = ' ';
 }
 
-/* EDID1.3 base block, one detailed native mode and no audio advertisement.
+/* EDID1.3 base block, one detailed native mode and a CTA audio extension.
  * Timings are generated from the panel profile rather than an opaque dump.
  */
 void edid_build(uint8_t bytes[128]) {
@@ -70,6 +70,32 @@ void edid_build(uint8_t bytes[128]) {
   text_descriptor(bytes + 72, 0xfc, "Adafruit RTD");
   text_descriptor(bytes + 90, 0xfe, "UC586 SDCC");
   bytes[111] = 0x10; /* unused descriptor */
+  bytes[126] = 1;
+  for (i = 0; i < 127; ++i) sum += bytes[i];
+  bytes[127] = (uint8_t)(0 - sum);
+}
+
+void edid_build_audio_extension(uint8_t bytes[128]) {
+  uint8_t i, sum = 0;
+  for (i = 0; i < 128; ++i) bytes[i] = 0;
+  bytes[0] = 2; /* CTA extension, revision 3. */
+  bytes[1] = 3;
+  bytes[2] = 20; /* Data blocks end here; no extra detailed timings. */
+  /* Leave basic-audio clear: that flag also promises 32 and 44.1 kHz.
+   * This first audio profile advertises only stereo 48 kHz, 16-bit LPCM.
+   */
+  bytes[4] = 0x41; /* Video block: one short video descriptor. */
+  bytes[5] = 1; /* VIC 1: 640x480, already supported by the video driver. */
+  bytes[6] = 0x23; /* Audio block: one three-byte descriptor. */
+  bytes[7] = 0x09; /* LPCM, two channels. */
+  bytes[8] = 0x04; /* 48 kHz. */
+  bytes[9] = 0x01; /* 16-bit samples. */
+  bytes[10] = 0x83; /* Speaker allocation block, three bytes. */
+  bytes[11] = 1; /* Front left/right. */
+  bytes[14] = 0x65; /* HDMI vendor block, five bytes. */
+  bytes[15] = 0x03; /* HDMI IEEE identifier 0x000C03, least byte first. */
+  bytes[16] = 0x0c;
+  bytes[18] = 0x10; /* Physical address 1.0.0.0; no CEC implementation. */
   for (i = 0; i < 127; ++i) sum += bytes[i];
   bytes[127] = (uint8_t)(0 - sum);
 }

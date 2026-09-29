@@ -89,8 +89,8 @@ CR49[1:0]=00 selects TMDS on the tested chip, although the older RTD2660 manual
 marks it reserved. Page 2 AB[1:0]=3 and B5[7]=1 are observed receiver settings;
 their analog rationale remains unresolved. The UC-586 uses port 0 with both
 differential polarity and red/blue lane swaps (page 2 A7=0x6F), selected by its
-board configuration. Automatic HDMI/DVI detection is enabled; this driver does
-not provide HDCP keys or audio support.
+board configuration. Automatic HDMI/DVI detection is enabled; HDCP keys are not
+provided. The separate [audio driver](audio.md) handles stereo LPCM.
 
 Horizontal expansion uses the documented 20-bit input/output fraction
 (manual pp38–39), rounded to 0xCCCCD for 640/800. Bypassed axes receive

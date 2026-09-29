@@ -64,7 +64,10 @@ enum {
   TMDS_PLL = 0xad,
   TMDS_TRACKING = 0xb5,
   HDCP_PORT = 0xc2,
-  HDMI_PORT = 0xc9
+  HDMI_PORT = 0xc9,
+  HDMI_STATUS = 0xcb,
+  HDMI_AV_CONTROL = 0x30,
+  HDMI_WATCHDOG = 0x31
 };
 
 #ifdef __SDCC_mcs51
@@ -91,6 +94,24 @@ static uint16_t display_vstart;
 
 uint16_t video_display_vstart(void) {
   return display_vstart;
+}
+
+void video_service(void) {
+  uint8_t status = rtd_read(2, HDMI_STATUS);
+  uint8_t enable = (status & 0x41) == 0x41 ? 0 : 0x08;
+  uint8_t control = rtd_indirect_read(2, HDMI_PORT, HDMI_AV_CONTROL);
+  uint8_t watchdog;
+  if ((control & 0x08) == enable) return;
+  /* Set_AVMute can clear video enable as well as audio enable. Restore video
+   * independently of audio rate support when HDMI clears AVMute or DVI returns.
+   */
+  watchdog = rtd_indirect_read(2, HDMI_PORT, HDMI_WATCHDOG);
+  if (watchdog & 0x80)
+    rtd_indirect_write(2, HDMI_PORT, HDMI_WATCHDOG, watchdog & 0x7f);
+  rtd_indirect_write(2, HDMI_PORT, HDMI_AV_CONTROL,
+                     (control & (uint8_t)~0x08) | enable);
+  if (watchdog & 0x80)
+    rtd_indirect_write(2, HDMI_PORT, HDMI_WATCHDOG, watchdog);
 }
 
 static void timing_word(uint8_t index, uint16_t value) {

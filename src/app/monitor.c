@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "rtd/board.h"
+#include "rtd/audio.h"
 #include "rtd/edid.h"
 #include "rtd/diagnostics.h"
 #include "rtd/io.h"
@@ -38,7 +39,7 @@ static uint8_t input_info_changed(const video_signal_t *signal) {
 void main(void) {
   video_signal_t signal;
   uint8_t displayed_mode = VIDEO_MODE_NONE, candidate_mode = VIDEO_MODE_NONE;
-  uint8_t matching_samples = 0, screen = 0;
+  uint8_t matching_samples = 0, screen = 0, audio_tick;
   uint32_t info_started = 0;
 
   platform_init();
@@ -47,6 +48,7 @@ void main(void) {
   edid_publish();
   video_init();
   board_init();
+  audio_init();
   video_background(0, 0, 0);
   mcu_write(0xf2, 2);
 #if RTD_SPLASH
@@ -61,6 +63,7 @@ void main(void) {
 
   for (;;) {
     if (!video_measure(&signal)) {
+      audio_stop();
       video_blank(1);
       if (signal.error == VIDEO_DIGITAL_TIMEOUT) {
         if (screen != 1) {
@@ -76,6 +79,7 @@ void main(void) {
       matching_samples = 0;
       mcu_write(0xf2, 3);
     } else if (signal.mode != displayed_mode) {
+      audio_stop();
       if (signal.mode != candidate_mode) {
         candidate_mode = signal.mode;
         matching_samples = 1;
@@ -101,6 +105,13 @@ void main(void) {
     diagnostics_measurement(signal.error, signal.detail[0], signal.detail[1],
                              signal.detail[2]);
 #endif
-    platform_delay_ms(250);
+    /* Keep video qualification at its existing cadence while allowing the
+     * audio PLL and mute watchdogs to progress without blocking video setup.
+     */
+    for (audio_tick = 0; audio_tick < 25; ++audio_tick) {
+      if (displayed_mode != VIDEO_MODE_NONE) video_service();
+      audio_service(platform_millis(), displayed_mode != VIDEO_MODE_NONE);
+      platform_delay_ms(10);
+    }
   }
 }

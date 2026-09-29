@@ -14,7 +14,9 @@ void edid_publish(void) {
   mcu_write(0x1e, 2);
   mcu_update(0x2c, 1, 0);
   mcu_write(0x21, 0x2b);
-  for (i = 0; i < 256; ++i) ram[i] = i < 128 ? block[i] : 0;
+  for (i = 0; i < 128; ++i) ram[i] = block[i];
+  edid_build_audio_extension(block);
+  for (i = 0; i < 128; ++i) ram[128 + i] = block[i];
   mcu_update(0xa4, 0xf0, 0); /* DDC2 pin function */
   mcu_write(0x1f, 6);
   mcu_write(0x1f, 4);

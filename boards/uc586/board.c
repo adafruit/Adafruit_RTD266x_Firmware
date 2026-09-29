@@ -8,7 +8,8 @@ void board_init(void) {
   /* Empirical UC-586 pin settings from the preserved stock image at
    * function 0xcc8f, also exercised by the previous SDCC bench build.
    * These are board facts, not a generic RTD2660H pin configuration.
-   * GPIO roles beyond the TTL/DDC interface still need a wiring audit.
+   * FF9F/FFA1/FFA2 route MCLK, SCLK, LRCK and SD0 to the CS4334 DAC.
+   * Other GPIO roles beyond the TTL/DDC interface still need a wiring audit.
    */
   static const uint8_t pin_modes[] = {
     0x8a, 0x92, 0x02, 0x05, 0x20, 0xa4, 0x1b,
