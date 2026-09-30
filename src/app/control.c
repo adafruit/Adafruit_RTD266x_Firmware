@@ -5,14 +5,43 @@
 #include "rtd/osd.h"
 #include "rtd/platform.h"
 #include "rtd/video.h"
+#include "rtd/storage.h"
 
-/* Session settings deliberately do not write the retained vendor flash tail.
- * Values and controls have one owner, shared by physical keys and DDC/CI. */
+/* Values and controls have one owner, shared by physical keys and DDC/CI.
+ * Persistent preferences use the board EEPROM, never the program flash. */
 static uint8_t settings[SET_COUNT];
 static uint8_t page, selection, editing, dirty, overlay_changed, powered;
 static uint8_t hide_requested;
 static uint8_t previous_keys;
 static uint32_t last_key;
+#if RTD_SETTINGS
+static uint8_t save_pending;
+static uint32_t changed_at;
+#endif
+#if RTD_EEPROM_DIAGNOSTICS
+static uint16_t eeprom_address;
+#endif
+
+static void defaults(void) {
+  settings[SET_BRIGHTNESS] = settings[SET_CONTRAST] = 50;
+  settings[SET_BACKLIGHT] = settings[SET_VOLUME] = 100;
+  settings[SET_ASPECT] = settings[SET_MUTE] = 0;
+  settings[SET_SPLASH] = RTD_SPLASH ? 1 : 0;
+  settings[SET_POPUP] = 1;
+  settings[SET_NO_SIGNAL] = 2;
+  settings[SET_SIGNAL_TIMEOUT] = 0;
+  settings[SET_MENU_TIMEOUT] = 2;
+}
+
+#if RTD_SETTINGS
+static uint8_t settings_valid(void) {
+  static const uint8_t maximum[SET_COUNT] = {100, 100, 100, 1, 1, 1, 2, 5, 3, 100, 1};
+  uint8_t i;
+  for (i = 0; i < SET_COUNT; ++i)
+    if (settings[i] > maximum[i]) return 0;
+  return 1;
+}
+#endif
 
 static uint8_t item_count(void) {
   switch (page) {
@@ -51,18 +80,19 @@ static uint8_t selected_code(void) {
 }
 
 void control_init(void) {
-  settings[SET_BRIGHTNESS] = settings[SET_CONTRAST] = 50;
-  settings[SET_BACKLIGHT] = 100;
-  settings[SET_ASPECT] = 0;
-  settings[SET_SPLASH] = RTD_SPLASH ? 1 : 0;
-  settings[SET_POPUP] = 1;
-  settings[SET_NO_SIGNAL] = 2;
-  settings[SET_SIGNAL_TIMEOUT] = 0;
-  settings[SET_MENU_TIMEOUT] = 2;
+  defaults();
+#if RTD_SETTINGS
+  if (!store_load(settings, SET_COUNT) || !settings_valid()) defaults();
+  save_pending = 0;
+  changed_at = 0;
+#endif
   page = selection = editing = dirty = overlay_changed = previous_keys = 0;
   hide_requested = 0;
   powered = 1;
-  video_set_picture(50, 50);
+  video_set_picture(settings[SET_BRIGHTNESS], settings[SET_CONTRAST]);
+  video_set_aspect(settings[SET_ASPECT]);
+  audio_set_mute(settings[SET_MUTE]);
+  audio_set_volume(settings[SET_VOLUME]);
 }
 
 uint8_t control_setting(uint8_t setting) {
@@ -90,6 +120,10 @@ uint8_t control_get(uint8_t code, uint16_t *maximum, uint16_t *value) {
     break;
   case 0x12:
     *value = settings[SET_CONTRAST];
+    break;
+  case 0x62:
+    if (!audio_volume_available()) return 0;
+    *value = audio_get_volume();
     break;
   case 0x8d:
     *maximum = 2;
@@ -132,6 +166,32 @@ uint8_t control_get(uint8_t code, uint16_t *maximum, uint16_t *value) {
     *maximum = 3;
     *value = settings[SET_MENU_TIMEOUT];
     break;
+  case 0xeb:
+    *maximum = 0x103;
+#if RTD_SETTINGS
+    *value = store_status() | (save_pending ? 0x100 : 0);
+#else
+    *value = STORE_UNAVAILABLE;
+#endif
+    break;
+#if RTD_EEPROM_DIAGNOSTICS
+  case 0xec:
+    *maximum = 0xffff;
+    *value = board_eeprom_diagnostic();
+    break;
+  case 0xe9:
+    *maximum = 2046;
+    *value = eeprom_address;
+    break;
+  case 0xea: {
+    uint8_t bytes[2];
+    if (!board_eeprom_read(eeprom_address, bytes, 2)) return 0;
+    *maximum = 0xffff;
+    *value = ((uint16_t)bytes[0] << 8) | bytes[1];
+    eeprom_address = eeprom_address < 2045 ? eeprom_address + 2 : 0;
+    break;
+  }
+#endif
   default:
     return 0;
   }
@@ -140,9 +200,15 @@ uint8_t control_get(uint8_t code, uint16_t *maximum, uint16_t *value) {
 
 uint8_t control_set(uint8_t code, uint16_t value) {
   uint16_t maximum, old;
+  if (code == 0xea || code == 0xeb || code == 0xec) return 0;
   if (!control_get(code, &maximum, &old) || value > maximum)
     return 0;
   switch (code) {
+#if RTD_EEPROM_DIAGNOSTICS
+  case 0xe9:
+    eeprom_address = value;
+    return 1;
+#endif
   case 0x10:
     if (!board_backlight_set(powered ? (uint8_t)value : 0))
       return 0;
@@ -151,10 +217,15 @@ uint8_t control_set(uint8_t code, uint16_t value) {
   case 0x12:
     settings[SET_CONTRAST] = value;
     break;
+  case 0x62:
+    if (!audio_set_volume((uint8_t)value)) return 0;
+    settings[SET_VOLUME] = value;
+    break;
   case 0x8d:
     if (value != 1 && value != 2)
       return 0;
     audio_set_mute(value == 1);
+    settings[SET_MUTE] = value == 1;
     break;
   case 0xd6:
     if (value != 1 && value != 4)
@@ -203,6 +274,12 @@ uint8_t control_set(uint8_t code, uint16_t value) {
   }
   if (code == 0x12 || code == 0xe2)
     video_set_picture(settings[SET_BRIGHTNESS], settings[SET_CONTRAST]);
+#if RTD_SETTINGS
+  if (code != 0xd6 && value != old) {
+    save_pending = 1;
+    changed_at = platform_millis();
+  }
+#endif
   dirty = page != 0;
   last_key = platform_millis();
   return 1;
@@ -369,6 +446,15 @@ void control_service(uint32_t now) {
   static const uint8_t seconds[] = {0, 5, 10, 20};
   uint8_t keys = board_buttons(), pressed = keys & (uint8_t)~previous_keys;
   previous_keys = keys;
+#if RTD_SETTINGS
+  /* Coalesce adjustments, and never write from a DDC callback while drawing.
+   * A failed save is reported; another setting change permits a new attempt. */
+  if (save_pending && (uint32_t)(now - changed_at) >= 2000) {
+    save_pending = 0;
+    store_save(settings, SET_COUNT);
+    now = platform_millis();
+  }
+#endif
   /* Board drivers debounce physical keys. Virtual keys are already events. */
   if (pressed) {
     control_key(pressed);

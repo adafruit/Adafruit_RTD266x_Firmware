@@ -31,12 +31,13 @@ enter edit mode. No Signal is a submenu of Menu Settings.
 ## Control map
 
 Codes below are hexadecimal; values are decimal unless prefixed with `0x`.
-All settings are session-only. The controller does not write flash or other
-nonvolatile storage.
+Settings are session-only in the default build. Experimental EEPROM storage
+is described below; the controller never writes its program flash.
 
 | VCP | Control | Accepted values / readback |
 | --- | --- | --- |
 | `12` | Image contrast | 0–100, neutral/default 50 |
+| `62` | Audio volume | 0–100 linear amplitude, default 100; zero mutes independently of `8D` |
 | `8D` | Audio mute | 1 mute, 2 unmute |
 | `D6` | Soft power | 1 on, 4 off |
 | `DF` | VCP version, read-only | `0x0202` |
@@ -44,16 +45,17 @@ nonvolatile storage.
 | `E1` | Menu state, read-only | `(page << 8) \| (selection << 1) \| editing` |
 | `E2` | Image brightness | 0–100, neutral/default 50 |
 | `E3` | Aspect | 0 Keep (default), 1 Fill |
-| `E4` | Startup Splash on soft-power resume | 0 off, 1 on; default follows build-time `SPLASH` |
+| `E4` | Startup Splash | 0 off, 1 on; default follows build-time `SPLASH`; qualified storage also restores it before cold-boot display |
 | `E5` | Connection Popup | 0 off, 1 on (default) |
 | `E6` | No Signal Background | 0 black, 1 blue, 2 test bitmap (default) |
 | `E7` | No Signal Sleep After | 0 Never (default), 1=1s, 2=2s, 3=5s, 4=10s, 5=20s |
 | `E8` | Menu Timeout | 0 Never, 1=5s, 2=10s (default), 3=20s |
+| `EB` | Settings storage status, read-only | Low byte: 0 unavailable/disabled, 1 blank, 2 loaded/saved, 3 error; bit8 means a save is pending |
 
 The mute and power values follow [ddcutil's MCCS reference](https://www.ddcutil.com/vcpinfo_output/).
-`E0`–`E8` are project-specific. LED backlight (`10`) is unsupported and omitted
+`E0`–`EB` are project-specific. LED backlight (`10`) is unsupported and omitted
 from the capabilities string; its menu row is disabled with a gray `--`.
-Volume (`62`), mirror and rotation are also unavailable. Image brightness
+Mirror and rotation are also unavailable. Image brightness
 changes pixel values independently of LED backlight.
 
 For `E1`, page numbers are 0 closed, 1 category rail, 2 Picture, 3 Audio, 4 Display,
@@ -67,8 +69,49 @@ Startup Splash changes resume after `D6=4` then `D6=1`; cold boot still follows
 the build-time `SPLASH` option. No-signal sleep requests backlight power off after
 the selected delay and on when valid video is acquired. An
 open menu postpones sleep and wakes the backlight. Soft power off also stops
-audio and blanks video; DDC/CI remains serviced for resume. Settings persistence
-requires a separate NVM design; the retained vendor flash tail is not storage.
+audio and blanks video; DDC/CI remains serviced for resume. The retained vendor
+flash tail is not used for settings storage.
+
+## Settings storage
+
+`SETTINGS=0` is the default while EEPROM wiring remains unqualified. The
+`SETTINGS=1` implementation restores picture, aspect, volume/mute, splash,
+popup and timeout preferences before startup display. Changes are coalesced
+for two seconds, then saved to a separate 24LC16B EEPROM. Soft power and menu
+focus are not saved. Power loss during the two-second delay can discard the
+most recent adjustments.
+
+The driver follows GPIO routines found in the UC-586 stock disassembly:
+P6.6/RTD pin56 (`FFCD`) for SCL and P6.7/pin57 (`FFCE`) for SDA, open-drain
+selection `FF9A=05`. The board photograph identifies a 24LC16B, whose
+[Microchip datasheet](https://ww1.microchip.com/downloads/en/devicedoc/20002213b.pdf)
+specifies 2048 bytes and 16-byte write pages. **The bench EEPROM has not yet
+acknowledged reads on this GPIO pair.** Both lines return high at idle, and the
+first device-address byte is rejected; a repeated-START setup-delay fix did
+not resolve that failure. No EEPROM data has been written. Confirm wiring,
+obtain two matching full backups, and qualify an unused reservation before
+enabling writes on this or another board.
+
+The proposed reservation is the final 64 bytes, `0x7C0..0x7FF`, split into
+two 32-byte records. Schema/count, sequence, CRC16 and a commit-last marker
+select the newest complete record. Loaded values are range-checked before
+applying them. Unknown occupied data or recognizable newer schemas are not
+overwritten. Failed writes leave the runtime preferences usable and report
+`EB=3`; another setting change permits a new attempt. A valid older record
+survives an interrupted update. A first-ever torn write before any valid
+ownership record may conservatively disable saves rather than overwrite
+unrecognized data.
+
+Host tests cover corruption, interrupted page operations, write protection,
+readback failure, sequence/timer wrap, coalescing and startup restoration.
+These are not yet hardware save/power-cycle results.
+
+For a read-only bench build, use `SETTINGS=0 EEPROM_DIAGNOSTICS=1`.
+Set VCP `E9` to a byte address 0..2046; Get `EA` returns two bytes, high byte
+first, and advances by two (wrapping to zero). Get `EC` reports read-failure
+stage in the high byte and mux/line state in the low byte. These diagnostic
+codes do not write EEPROM and are absent from normal builds. The 16-bit
+readout uses existing `host.py` VCP commands; no programmer changes are needed.
 
 The PWM1 experiment accepted VCP requests for 100%, 25% and 0%, but three camera
 captures showed unchanged brightness. Level adjustment is therefore disabled;

@@ -120,10 +120,11 @@ See the [control map and host commands](docs/ddcci.md).
 
 Image brightness and contrast adjust video pixels. LED backlight adjustment
 is disabled: PWM1 requests at 100%, 25% and 0% produced no visible brightness
-change in three camera captures. The live menu also controls mute, aspect,
+change in three camera captures. The live menu also controls volume, mute, aspect,
 connection popups, menu timeout and no-signal appearance/sleep. Settings last
-for the current session only. Startup Splash affects soft-power resume; cold
-boot still follows the build-time `SPLASH` option. No-signal sleep requests
+for the current session in the default build. Startup Splash affects soft-power
+resume; cold boot uses the build-time `SPLASH` default unless EEPROM settings
+support has been qualified and enabled. No-signal sleep requests
 backlight power off and on when valid input returns. Its separate stock-derived
 P6.4 gate passed physical backlight-off and wake checks on the UC-586.
 
@@ -132,10 +133,12 @@ rotation and mirroring, but the mechanism and available modes are board
 dependent. See the [capability and firmware-analysis notes](docs/ui-capabilities.md).
 The first audio profile implements stereo 48 kHz LPCM through the UC-586's
 CS4334 DAC. See [audio support and validation](docs/audio.md) for its current
-bench status and limits. LED backlight, volume, mirror and rotation are disabled
+bench status and limits. LED backlight, mirror and rotation are disabled
 in the menu; LED backlight shows a gray `--`.
-Settings persistence needs a separate nonvolatile-storage design; arbitrary
-video modes are not implemented. All six live pages, navigation, editing and
+An experimental EEPROM settings implementation is host-tested, but disabled
+by default pending UC-586 wiring/readback qualification. See
+[settings storage](docs/ddcci.md#settings-storage) before enabling it.
+Arbitrary video modes are not implemented. All six live pages, navigation, editing and
 setting readback passed the [DDC/CI bench checks](docs/ddcci.md#transport-and-validation),
 including uninterrupted audio during menu drawing. Camera and audio checks also
 confirmed picture adjustments, Keep/Fill aspect, mute, soft power and no-signal

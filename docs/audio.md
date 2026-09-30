@@ -4,7 +4,7 @@ The first audio profile accepts **two-channel 48 kHz LPCM** and routes the first
 I2S stereo pair to the board's CS4334-KSZ DAC and headphone jack. Its EDID CTA
 extension advertises 16-bit samples at 48 kHz only. The basic-audio flag stays
 clear because that flag also promises 32 and 44.1 kHz. Compressed audio,
-multichannel downmixing, other sample rates and volume controls are not provided.
+multichannel downmixing and other sample rates are not provided.
 
 ## Board and register evidence
 
@@ -59,16 +59,42 @@ or a changed sample rate stops output and requires reacquisition. N/CTS can rema
 stale after disconnect, so rate arithmetic alone never enables the output.
 Only I2S is enabled; SPDIF remains disabled.
 
-The live Audio menu and DDC/CI VCP `0x8D` share a session mute setting:
+The live Audio menu and DDC/CI VCP `0x8D` share a mute setting:
 `1` mutes and `2` unmutes, following the
 [MCCS values documented by ddcutil](https://www.ddcutil.com/vcpinfo_output/).
 Unmute permits output only when the existing link, format and clock checks pass;
 it does not override fault muting. Soft power off (`0xD6=4`) also stops audio.
-Volume remains unavailable and appears disabled in the menu. These controls do
-not write persistent settings. Live menu and DDC transactions are validated in
-the [DDC/CI reference](ddcci.md); physical mute/unmute measurements are below.
+Volume uses VCP `0x62`, 0–100% linear amplitude, default 100. At 100 the gain
+stage is bypassed for exact unity; 1–99 maps to the nearest coefficient out of
+256. Zero gates audio output, independently of the user's mute preference.
+Changing volume cannot override link, format, clock or FIFO fault muting.
+Attenuation is reapplied before output is enabled after signal reacquisition.
+Live menu and DDC transactions are validated in the [DDC/CI reference](ddcci.md).
+
+The related [Realtek RTD2473AD/2483AD specification](https://285624.selcdn.ru/syms1/iblock/577/577e16164a649de516db8925973bd77a/901ce322e9fb261fcfbfc83cddc88a40.pdf),
+pp156–158, identifies manual gain enable as HDMI index `03` bit3, with bit6
+clear. Index `05` is gain/256; index `06` controls automatic ramping rather
+than a second stereo channel. The RTD2660 reference uses the same register
+names. The following UC-586 measurement qualifies this mapping on our chip.
 
 ## Validation
+
+On 2026-09-29, the v34 volume probe measured these levels through the existing
+C-Media analog capture path while the HSTX source sent the same 1 kHz tone:
+
+| Volume | RMS dBFS | Relative to 100% |
+| --- | ---: | ---: |
+| 100 | -15.375 | 0 dB |
+| 50 | -21.382 | -6.007 dB |
+| 25 | -27.355 | -11.980 dB |
+| 0 | -51.433 | -36.058 dB |
+| 100, restored | -15.358 | +0.017 dB |
+
+The pre-update baseline was -15.359 dBFS. The 50% and 25% changes agree with
+linear amplitude attenuation. Zero matches the existing output-mute behavior
+in this capture path; it is not a claim of zero analog noise. Each result
+excludes the first and last second of a four-second recording. Both channels
+carried the same source tone; this does not establish stereo separation.
 
 Host tests cover arithmetic limits, rate rejection, delayed unmute, PLL timeout,
 FIFO and watchdog failures, loss/reacquisition, video-bit preservation and timer

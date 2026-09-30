@@ -3,6 +3,13 @@
 #define RTD_CONTROL_H
 #include <stdint.h>
 
+#ifndef RTD_SETTINGS
+#define RTD_SETTINGS 0
+#endif
+#ifndef RTD_EEPROM_DIAGNOSTICS
+#define RTD_EEPROM_DIAGNOSTICS 0
+#endif
+
 enum {
   MENU_CLOSED,
   MENU_MAIN,
@@ -22,6 +29,8 @@ enum {
   SET_NO_SIGNAL,
   SET_SIGNAL_TIMEOUT,
   SET_MENU_TIMEOUT,
+  SET_VOLUME,
+  SET_MUTE,
   SET_COUNT
 };
 

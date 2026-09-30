@@ -38,6 +38,10 @@ uint8_t rtd_indirect_read(uint8_t page, uint8_t reg, uint8_t index) {
 void rtd_indirect_write(uint8_t page, uint8_t reg, uint8_t index,
                         uint8_t value) {
   assert(page == 2 && reg == 0xc9 && !(direct[0xc8] & 1));
+#if RTD_AUDIO_VOLUME
+  if (index == 0x03 && audio[0x62] && audio_get_volume() < 100)
+    assert(value & 8); /* Never transiently bypass a live attenuation setting. */
+#endif
   audio[index] = value;
   if (index == 0x2d && value == 2 && pll_accept) {
     audio[0x3c] = 0x1e;
@@ -47,6 +51,15 @@ void rtd_indirect_write(uint8_t page, uint8_t reg, uint8_t index,
     assert(value == 0x0f); /* SPDIF stays disabled. */
     assert((direct[0xcb] & 0x57) == 1);
     assert((audio[0x31] & 0x86) == 0x86 && (audio[0x32] & 0x80));
+#if RTD_AUDIO_VOLUME
+    assert(audio_get_volume() && !audio_get_mute());
+    if (audio_get_volume() < 100) {
+      assert((audio[0x03] & 0x58) == 0x08); /* Manual, normal audio, gain on. */
+      assert(audio[0x05] == (audio_get_volume() * 256u + 50u) / 100u);
+    } else {
+      assert(!(audio[0x03] & 8)); /* Unity uses bypass, not 255/256. */
+    }
+#endif
     ++output_enables;
   }
 }
@@ -224,7 +237,8 @@ static void test_fifo_settling(void) {
 
 static void test_user_mute(void) {
   fixture();
-  assert(!audio_get_mute() && !audio_volume_available());
+  assert(!audio_get_mute());
+  assert(audio_volume_available() == (RTD_AUDIO_VOLUME != 0));
   acquire(0);
   audio_set_mute(1);
   assert(audio_get_mute() && !audio[0x62]);
@@ -255,6 +269,96 @@ static void test_user_mute(void) {
   audio_set_mute(0);
   service(2260, 1);
   assert(audio[0x62] == 15 && output_enables == 1);
+}
+
+static void test_volume(void) {
+  fixture();
+  assert(audio_get_volume() == 100);
+#if RTD_AUDIO_VOLUME
+  assert(audio_set_volume(50));
+  assert(audio_get_volume() == 50 && audio[0x05] == 128);
+  assert((audio[0x03] & 0x08) && !audio[0x62]);
+  acquire(0); /* Gain must survive start_tracking's FIFO-control write. */
+  assert(audio[0x05] == 128 && audio[0x03] == 0x2e);
+  assert(audio_set_volume(25));
+  assert(audio_get_volume() == 25 && audio[0x05] == 64);
+  assert(audio[0x62] == 15 && output_enables == 1);
+  assert(!audio_set_volume(101) && !audio_set_volume(255));
+  assert(audio_get_volume() == 25 && audio[0x05] == 64);
+  assert(audio[0x03] == 0x2e && audio[0x62] == 15);
+
+  assert(audio_set_volume(0));
+  assert(!audio_get_volume() && !audio_get_mute());
+  assert(!audio[0x05] && !audio[0x62]);
+  service(1005, 1);
+  assert(audio_state() == AUDIO_PLAYING && !audio[0x62]);
+  audio_set_mute(1);
+  assert(audio_set_volume(50));
+  service(1006, 1);
+  assert(audio_get_mute() && !audio[0x62]);
+  audio_set_mute(0);
+  assert(!audio[0x62]);
+  service(1007, 1);
+  assert(audio[0x62] == 15 && output_enables == 2);
+  audio_stop();
+  output_enables = 0;
+  acquire(2000);
+  assert(audio_get_volume() == 50 && audio[0x05] == 128);
+  assert(audio[0x03] == 0x2e);
+  assert(audio_set_volume(100));
+  assert(audio_get_volume() == 100 && audio[0x03] == 0x26);
+  assert(audio[0x62] == 15);
+
+  fixture();
+  assert(audio_set_volume(0));
+  start(0);
+  service(504, 1);
+  service(1004, 1);
+  assert(audio_state() == AUDIO_PLAYING);
+  muted(); /* Zero volume survives acquisition without changing user mute. */
+  audio_set_mute(0);
+  service(1005, 1);
+  muted();
+  assert(audio_set_volume(100));
+  muted(); /* Setter cannot enable output, even at unity. */
+  service(1006, 1);
+  assert(audio[0x62] == 15 && output_enables == 1);
+#else
+  assert(!audio_volume_available());
+  assert(!audio_set_volume(0) && !audio_set_volume(50));
+  assert(!audio_set_volume(100) && !audio_set_volume(255));
+  assert(audio_get_volume() == 100 && !audio[0x05]);
+  acquire(0);
+  assert(audio[0x03] == 0x26);
+#endif
+}
+
+static void test_guarded_volume_unmute(void) {
+#if RTD_AUDIO_VOLUME
+  static const uint8_t faults[] = {0, 0x11, 0x41, 3, 5};
+  unsigned i;
+  for (i = 0; i < sizeof faults; ++i) {
+    fixture();
+    acquire(0);
+    assert(audio_set_volume(0));
+    direct[0xcb] = faults[i];
+    assert(audio_set_volume(50));
+    assert(!audio[0x62]);
+    service(1005, 1);
+    assert(!audio[0x62] && output_enables == 1);
+    assert(audio_get_volume() == 50);
+  }
+  fixture();
+  acquire(0);
+  assert(audio_set_volume(0));
+  service(1104, 1);
+  assert(audio_state() == AUDIO_RATE_CHECK);
+  acr(12288, 25200, 1097);
+  assert(audio_set_volume(50));
+  service(1106, 1);
+  assert(audio_state() == AUDIO_RETRY && !audio[0x62]);
+  assert(output_enables == 1);
+#endif
 }
 
 static void test_guarded_user_unmute(void) {
@@ -299,6 +403,8 @@ int main(void) {
   test_fifo_settling();
   test_user_mute();
   test_guarded_user_unmute();
-  puts("Audio: rate validation, guarded unmute, faults, deadlines and rollover pass");
+  test_volume();
+  test_guarded_volume_unmute();
+  puts("Audio: rate validation, volume, guarded unmute, faults and deadlines pass");
   return 0;
 }

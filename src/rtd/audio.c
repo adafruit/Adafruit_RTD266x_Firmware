@@ -13,7 +13,7 @@
 
 enum {
   HDMI_ACCESS = 0xc8, HDMI_PORT = 0xc9, HDMI_STATUS = 0xcb,
-  FIFO_CONTROL = 0x03, CLOCK_COMMIT = 0x10,
+  FIFO_CONTROL = 0x03, MANUAL_GAIN = 0x05, CLOCK_COMMIT = 0x10,
   PLL_M = 0x11, PLL_S = 0x12, PLL_D_HIGH = 0x13, PLL_D_LOW = 0x14,
   TRACKING = 0x15, TREND_TIME = 0x1a, FIFO_BOUNDARY = 0x1b,
   TREND_GAIN = 0x21, BOUNDARY_I = 0x25, BOUNDARY_P = 0x27,
@@ -33,7 +33,7 @@ enum {
 #define RETRY_MS 250UL
 
 static uint8_t state;
-static uint8_t user_muted;
+static uint8_t user_muted, user_volume;
 static uint32_t entered, pll_started, measured_rate;
 
 static uint8_t read_audio(uint8_t index) {
@@ -63,12 +63,36 @@ void audio_set_mute(uint8_t muted) {
 
 uint8_t audio_get_mute(void) { return user_muted; }
 
-uint8_t audio_volume_available(void) {
-  /* The CS4334 has no control interface. RTD gain registers 05/06 are named
-   * in the reference, but their fields and gain encoding remain unverified.
+static void apply_volume(void) {
+#if RTD_AUDIO_VOLUME
+  /* The related Realtek RTD2473AD/2483AD specification, pp156-158, defines
+   * manual AFCR.3 gain as MAGCR/256, with AFCR.6 clear. Its register names
+   * match the RTD2660 reference; board measurements qualify this contract.
+   * Index 06 controls the automatic ramp, not the other stereo channel.
+   * https://285624.selcdn.ru/syms1/iblock/577/577e16164a649de516db8925973bd77a/901ce322e9fb261fcfbfc83cddc88a40.pdf
    */
-  return 0;
+  if (user_volume < 100) {
+    uint8_t gain = (uint8_t)(((uint16_t)user_volume * 256u + 50u) / 100u);
+    /* Load attenuation before enabling it; bypass gives exact unity at 100%. */
+    write_audio(MANUAL_GAIN, gain);
+    update_audio(FIFO_CONTROL, 0x08, 0x08);
+  } else {
+    update_audio(FIFO_CONTROL, 0x08, 0);
+  }
+#endif
 }
+
+uint8_t audio_volume_available(void) { return RTD_AUDIO_VOLUME != 0; }
+
+uint8_t audio_set_volume(uint8_t percent) {
+  if (!audio_volume_available() || percent > 100) return 0;
+  user_volume = percent;
+  if (!percent) write_audio(OUTPUT_ENABLE, 0);
+  apply_volume();
+  return 1;
+}
+
+uint8_t audio_get_volume(void) { return user_volume; }
 
 void audio_stop(void) {
   write_audio(OUTPUT_ENABLE, 0); /* Disable I2S and SPDIF outputs first. */
@@ -87,6 +111,8 @@ void audio_init(void) {
   write_audio(FIFO_CONTROL, 0x06);
   entered = pll_started = 0;
   user_muted = 0;
+  user_volume = 100;
+  apply_volume();
 }
 
 static void retry(uint32_t now) {
@@ -148,6 +174,7 @@ static void start_tracking(void) {
   update_audio(AV_CONTROL, ENABLE_AUDIO, ENABLE_AUDIO);
   update_audio(WATCHDOG, 0x80, 0x80);
   write_audio(FIFO_CONTROL, 0x26);
+  apply_volume(); /* Restore attenuation before any physical output is enabled. */
   write_audio(TRACKING, 0x04);
   write_audio(BOUNDARY_I, 1);
   write_audio(BOUNDARY_P, 1);
@@ -246,7 +273,8 @@ void audio_service(uint32_t now, uint8_t video_valid) {
     break;
   }
   if (state == AUDIO_PLAYING) {
-    uint8_t outputs = user_muted ? 0 : 0x0f; /* I2S only; SPDIF stays off. */
+    uint8_t outputs = (user_muted || !user_volume) ? 0 : 0x0f;
+    /* I2S only; SPDIF stays off. */
     if (read_audio(OUTPUT_ENABLE) != outputs)
       write_audio(OUTPUT_ENABLE, outputs);
   }

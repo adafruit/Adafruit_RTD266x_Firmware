@@ -64,15 +64,15 @@ void main(void) {
   ddcci_init();
   video_background(0, 0, 0);
   mcu_write(0xf2, 2);
-#if RTD_SPLASH
   /* The startup screen owns the entire raster. Start video acquisition only
    * after it ends, so incoming pixels cannot appear behind the bitmap.
    */
-  video_background(0, 0, 0);
-  osd_show_splash();
-  platform_delay_ms(SPLASH_DURATION_MS);
-  osd_hide();
-#endif
+  if (control_setting(SET_SPLASH)) {
+    video_background(0, 0, 0);
+    osd_show_splash();
+    platform_delay_ms(SPLASH_DURATION_MS);
+    osd_hide();
+  }
 #if RTD_MENU_PREVIEW
   for (preview_page = 0; preview_page < OSD_PREVIEW_COUNT; ++preview_page) {
     for (preview_variant = 0; preview_variant < 3; ++preview_variant) {

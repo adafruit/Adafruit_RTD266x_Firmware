@@ -2,6 +2,7 @@
 #include "rtd/ddcci.h"
 #include "rtd/io.h"
 #include "rtd/platform.h"
+#include "rtd/audio.h"
 
 /* RTD2660 register manual pp.293-297: separate sub-address latch plus a
  * shared 16-byte RX/TX FIFO. Short complete replies fit without interrupts
@@ -34,7 +35,11 @@ enum {
 
 static const DDCCI_CODE char capabilities[] =
     "(prot(monitor)type(LCD)model(Adafruit_RTD266x)"
-    "cmds(01 03 F3)vcp(12 8D D6 DF E0 E1 E2 E3 E4 E5 E6 E7 E8)"
+    "cmds(01 03 F3)vcp(12 "
+#if RTD_AUDIO_VOLUME
+    "62 "
+#endif
+    "8D D6 DF E0 E1 E2 E3 E4 E5 E6 E7 E8 EB)"
     "mccs_ver(2.2))";
 
 static uint8_t packet[DDCCI_PACKET_BYTES];

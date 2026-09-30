@@ -9,11 +9,15 @@
 #include "rtd/osd.h"
 #include "rtd/platform.h"
 #include "rtd/video.h"
+#include "rtd/storage.h"
 
 /* Exercise real application policy with observable hardware and OSD calls.
  * Analog image quality and physical key debounce belong to board tests. */
 static uint32_t clock_ms;
-static uint8_t keys, backlight_available, backlight_ok, muted;
+static uint8_t keys, backlight_available, backlight_ok, muted, volume;
+static uint8_t volume_available;
+static uint8_t saved[SET_COUNT], saved_present, storage_state, storage_ok;
+static unsigned saves;
 static uint8_t brightness, contrast, fill, backlight;
 static unsigned picture_writes, aspect_writes, backlight_writes;
 static unsigned mute_writes, stops, hides, renders, row_count;
@@ -27,6 +31,29 @@ static struct {
 } rows[5];
 
 uint32_t platform_millis(void) { return clock_ms; }
+uint8_t store_load(uint8_t *values, uint8_t count) {
+  assert(count == SET_COUNT);
+  storage_state = saved_present ? STORE_LOADED : STORE_EMPTY;
+  if (saved_present) memcpy(values, saved, count);
+  return saved_present;
+}
+uint8_t store_save(const uint8_t *values, uint8_t count) {
+  assert(count == SET_COUNT);
+  ++saves;
+  storage_state = storage_ok ? STORE_LOADED : STORE_ERROR;
+  if (!storage_ok) return 0;
+  memcpy(saved, values, count);
+  saved_present = 1;
+  return 1;
+}
+uint8_t store_status(void) { return storage_state; }
+uint8_t board_eeprom_read(uint16_t address, uint8_t *data, uint8_t count) {
+  uint8_t i;
+  if (address >= 2048 || count > 2048 - address) return 0;
+  for (i = 0; i < count; ++i) data[i] = (uint8_t)(address + i);
+  return 1;
+}
+uint16_t board_eeprom_diagnostic(void) { return 0x0053; }
 uint8_t board_buttons(void) { return keys; }
 uint8_t board_backlight_available(void) { return backlight_available; }
 uint8_t board_backlight_power(uint8_t on) { backlight = on ? 100 : 0; return 1; }
@@ -37,7 +64,13 @@ uint8_t board_backlight_set(uint8_t percent) {
   return 1;
 }
 uint8_t audio_get_mute(void) { return muted; }
-uint8_t audio_volume_available(void) { return 0; }
+uint8_t audio_volume_available(void) { return volume_available; }
+uint8_t audio_get_volume(void) { return volume; }
+uint8_t audio_set_volume(uint8_t percent) {
+  if (!volume_available || percent > 100) return 0;
+  volume = percent;
+  return 1;
+}
 void audio_set_mute(uint8_t value) { muted = value != 0; ++mute_writes; }
 void audio_stop(void) { ++stops; }
 void video_set_picture(uint8_t b, uint8_t c) {
@@ -83,6 +116,10 @@ void osd_menu_end(const char *text) {
 static void fixture(void) {
   clock_ms = 0;
   keys = muted = fill = 0;
+  volume = 100;
+  volume_available = 0;
+  saved_present = saves = 0;
+  storage_ok = 1;
   backlight_available = backlight_ok = 1;
   picture_writes = aspect_writes = backlight_writes = mute_writes = 0;
   stops = hides = renders = row_count = 0;
@@ -92,6 +129,8 @@ static void fixture(void) {
   injected = 0;
   control_init();
   assert(brightness == 50 && contrast == 50 && picture_writes == 1);
+  assert(!fill && !muted && volume == 100);
+  aspect_writes = mute_writes = 0;
 }
 
 static uint16_t value(uint8_t code, uint16_t expected_maximum) {
@@ -427,6 +466,87 @@ static void test_callbacks_during_render(void) {
   }
 }
 
+static void test_volume_control(void) {
+  fixture();
+  volume_available = 1;
+  enter(1);
+  assert(rows[0].available && rows[0].value == 100);
+  event(BOARD_KEY_MENU);
+  state(MENU_AUDIO, 0, 1);
+  event(BOARD_KEY_DECREASE);
+  assert(value(0x62, 100) == 95 && rows[0].value == 95);
+  assert(control_setting(SET_VOLUME) == 95);
+  assert(control_set(0x62, 25) && volume == 25);
+  assert(!control_set(0x62, 101) && volume == 25);
+  assert(control_set(0x8d, 1) && volume == 25 && muted);
+  assert(control_setting(SET_MUTE) == 1);
+  assert(control_set(0x62, 0) && muted && volume == 0);
+  assert(control_set(0x8d, 2) && !muted && volume == 0);
+}
+
+static void test_persistence(void) {
+#if RTD_SETTINGS
+  uint8_t i;
+  fixture();
+  volume_available = 1;
+  assert(control_set(0x12, 35));
+  clock_ms = 1999;
+  control_service(clock_ms);
+  assert(!saves);
+  assert(control_set(0xe2, 65));
+  assert(control_set(0x62, 25) && control_set(0x8d, 1));
+  assert(control_set(0xe4, 0) && control_set(0xe3, 1));
+  assert(control_set(0xe5, 0) && control_set(0xe6, 1));
+  assert(control_set(0xe7, 3) && control_set(0xe8, 3));
+  clock_ms += 1999;
+  control_service(clock_ms);
+  assert(!saves && (value(0xeb, 0x103) & 0x100));
+  ++clock_ms;
+  control_service(clock_ms);
+  assert(saves == 1 && value(0xeb, 0x103) == STORE_LOADED);
+  muted = fill = 0; volume = 100;
+  control_init();
+  assert(brightness == 65 && contrast == 35 && volume == 25 && muted && fill);
+  assert(!control_setting(SET_SPLASH) && !control_setting(SET_POPUP));
+  assert(control_setting(SET_NO_SIGNAL) == 1 && control_signal_timeout_ms() == 5000);
+  assert(control_setting(SET_MENU_TIMEOUT) == 3);
+  assert(control_set(0x12, 35));
+  clock_ms += 3000;
+  control_service(clock_ms);
+  assert(saves == 1); /* No wear for an unchanged preference. */
+  storage_ok = 0;
+  assert(control_set(0x12, 40));
+  clock_ms += 2000;
+  control_service(clock_ms);
+  assert(saves == 2 && value(0xeb, 0x103) == STORE_ERROR && contrast == 40);
+  clock_ms += 10000;
+  control_service(clock_ms);
+  assert(saves == 2); /* Do not keep retrying a failed EEPROM. */
+  for (i = 0; i < SET_COUNT; ++i) {
+    memset(saved, 0, sizeof saved);
+    saved[i] = 255; saved_present = 1;
+    fill = muted = 1; volume = 25;
+    control_init();
+    assert(brightness == 50 && contrast == 50);
+    assert(control_setting(SET_VOLUME) == 100 && control_setting(SET_MUTE) == 0);
+    assert(!fill && !muted && volume == 100);
+  }
+  fixture();
+  clock_ms = UINT32_MAX - 1000;
+  assert(control_set(0x12, 30));
+  clock_ms += 2000;
+  control_service(clock_ms);
+  assert(saves == 1); /* Coalescing survives uptime rollover. */
+#endif
+#if RTD_EEPROM_DIAGNOSTICS
+  fixture();
+  assert(control_set(0xe9, 0x7fc));
+  assert(value(0xea, 0xffff) == 0xfcfd && value(0xea, 0xffff) == 0xfeff);
+  assert(value(0xe9, 2046) == 0 && !control_set(0xe9, 2047));
+  assert(!control_set(0xea, 0) && !control_set(0xeb, 0));
+#endif
+}
+
 int main(void) {
   test_navigation();
   test_rail_previews_settings();
@@ -436,6 +556,8 @@ int main(void) {
   test_vcp_rejection_and_power();
   test_timeouts_and_physical_edges();
   test_callbacks_during_render();
+  test_volume_control();
+  test_persistence();
   puts("Control: menu navigation, real setting calls, VCP bounds, power and timeouts pass");
   return 0;
 }

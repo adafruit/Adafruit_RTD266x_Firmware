@@ -72,7 +72,8 @@ Picture's `Image brightness` changes pixel values. Display's `LED backlight`
 is disabled and shows a gray `--`: PWM1 requests for 100%, 25% and 0% were
 accepted, but three camera captures showed no visible brightness change.
 Contrast, audio mute, Keep/Fill aspect and the runtime options below are wired
-to the shared settings controller. Volume, rotation and mirror remain disabled.
+to the shared settings controller. Volume provides 0–100% linear amplitude;
+rotation and mirror remain disabled pending a qualified panel control path.
 The separate P6.4/pin54 backlight power gate passed physical off/wake checks.
 
 Live menus use a centered 360x216 panel at native 1x size, with a thin outline,
@@ -193,7 +194,11 @@ plane order were checked on the UC-586, followed by return to input video.
 ## Runtime settings
 
 Settings are held in RAM for the current session; no settings are written to
-the retained vendor flash tail. Persistence is a separate future NVM task.
+the retained vendor flash tail. A two-record EEPROM implementation is now
+host-tested, including interrupted-save recovery and restore before the splash,
+but `SETTINGS=0` remains the default: the chip has not acknowledged reads on
+the stock code's P6.6/P6.7 pair. No EEPROM writes have been attempted. See the
+[storage qualification and diagnostic interface](ddcci.md#settings-storage).
 
 | Setting | Choices | Default |
 | --- | --- | --- |
@@ -221,6 +226,7 @@ precisely time the delay from initial loss. `Never` disables automatic sleep.
 | Small graphic splash | 1-, 2- or 4-bit tiles in dedicated OSD SRAM, with shared palette and window effects | Automatic BMP conversion; one-bit or four-bit tiles, 15 visible colors plus transparency, 4x scale |
 | Video brightness | Per-channel RGB additive coefficients, separate from backlight power | Live 0–100 control; setting 75 visibly lifted black to gray, then restored to neutral 50 |
 | Video contrast | Per-channel RGB multiplicative coefficients | Live 0–100 control; setting 25 visibly darkened the picture, then restored to neutral 50 |
+| Audio volume | HDMI manual digital gain before I2S | Live 0–100 amplitude control; 50% and 25% measured approximately -6 dB and -12 dB relative to 100% |
 | Backlight level | Six 12-bit PWM channels and multiplexed output pins | Disabled; PWM1 requests at 100/25/0% produced unchanged brightness in three camera captures; VCP `10` unsupported and omitted from capabilities |
 | Backlight power | Stock button toggles P6.4/pin 54 through `0xFFCB` bit 0 | Physical off/on and no-signal sleep/wake verified; level dimming remains unavailable |
 | One or five buttons | GPIO and ADC key-sensing inputs are available | Stock UC-586 main polls pin 53 and toggles pin 54; ADC ladder code is also present but not evidence of connected keys |
@@ -255,6 +261,9 @@ has no flip/rotation control, while support on a suitably wired board remains
 an intended extension. Reversing both panel scan directions could provide a
 180-degree mode without buffering a full frame; this is a mechanism hypothesis
 for the shipped SYS modes, not a completed UC-586 measurement.
+The UC-586 stock mux values (`FF9F=1C`, `FF9D=1B`) also differ from the cited
+ORTD GPIO configuration. No panel-direction GPIO writes are enabled merely
+because another board uses the same scaler.
 
 ## Interface boundaries for later firmware
 

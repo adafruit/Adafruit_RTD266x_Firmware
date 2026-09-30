@@ -6,6 +6,7 @@
 #include "rtd/ddcci.h"
 #include "rtd/io.h"
 #include "rtd/platform.h"
+#include "rtd/audio.h"
 
 /* Packet tests use the public decoder without hardware. The transport model
  * separately models the documented shared FIFO; physical DDC validation is
@@ -100,7 +101,7 @@ static void test_get_set(void) {
   assert(output[2] == 2 && output[3] == 0 && output[4] == 0x12);
   assert(output[6] == 0 && output[7] == 100);
   assert(output[8] == 0 && output[9] == 73);
-  get[3] = 0x62; /* Unsupported volume remains unsupported. */
+  get[3] = 0x62; /* This test controller deliberately rejects the requested code. */
   checksum(get, sizeof get, 0x6e);
   count = ddcci_packet(get, sizeof get, output);
   response_valid(output, count);
@@ -168,7 +169,12 @@ static void test_capabilities(void) {
     offset += chars;
   } while (chars && assembled[offset - 1]);
   assert(strstr(assembled, "mccs_ver(2.2)"));
-  assert(strstr(assembled, "vcp(12 8D D6 DF E0 E1 E2 E3 E4 E5 E6 E7 E8)"));
+  assert(strstr(assembled, "8D D6 DF E0 E1 E2 E3 E4 E5 E6 E7 E8"));
+#if RTD_AUDIO_VOLUME
+  assert(strstr(assembled, "vcp(12 62 "));
+#else
+  assert(strstr(assembled, "vcp(12 8D "));
+#endif
   request[3] = request[4] = 0xff;
   checksum(request, sizeof request, 0x6e);
   assert(ddcci_packet(request, sizeof request, reply) == 6);
