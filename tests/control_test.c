@@ -39,6 +39,9 @@ static struct {
 #define TEST_ASPECT_MAX (RTD_ASPECT_16_9 ? 3 : RTD_ASPECT_4_3 ? 2 : 1)
 
 uint32_t platform_millis(void) { return clock_ms; }
+#if RTD_BITMAP_TIMING
+uint16_t osd_bitmap_millis(uint8_t index) { return 10 + index; }
+#endif
 uint8_t platform_code_read(uint16_t address) { return (uint8_t)address; }
 uint8_t platform_vendor_probe_available(void) { return 1; }
 uint8_t platform_vendor_probe_read(uint16_t address) { return (uint8_t)address; }
@@ -1079,6 +1082,20 @@ static void test_firmware_crc_vcp(void) {
   assert(saves == previous_saves);
 }
 
+static void test_bitmap_timing_vcp(void) {
+  uint8_t code;
+  uint16_t maximum, result;
+  for (code = 0xfb; code <= 0xfe; ++code) {
+#if RTD_BITMAP_TIMING
+    assert(control_get(code, &maximum, &result));
+    assert(maximum == 0xffff && result == 10u + code - 0xfbu);
+#else
+    assert(!control_get(code, &maximum, &result));
+#endif
+    assert(!control_set(code, 0));
+  }
+}
+
 int main(void) {
   test_navigation();
   test_rail_previews_settings();
@@ -1098,6 +1115,7 @@ int main(void) {
   test_factory_reset_persistence();
   test_persistence();
   test_firmware_crc_vcp();
+  test_bitmap_timing_vcp();
   puts("Control: menus, color/style, reset, VCP bounds, power/sleep, burn-in and persistence pass");
   return 0;
 }

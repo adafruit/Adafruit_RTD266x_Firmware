@@ -78,16 +78,55 @@ The converter uses Python 3 and Pillow (`pip3 install Pillow`). It can also be
 run directly: `python3 tools/bmp_to_header.py input.bmp output.h`. It preserves
 the output timestamp when the result is unchanged. The generated firmware data
 contains an RGB palette and losslessly compressed OSD tiles. The 8051 expands
-run/literal packets directly into OSD SRAM, without a RAM image buffer or pixel
-packing during startup. A row-major reference is included only for host tests:
+dictionary/literal/repeat packets directly into OSD SRAM, without a RAM image
+buffer or pixel packing during startup. A row-major reference is included only for host tests:
 one-bit pixels are MSB first, and four-bit indices use the high nibble first.
-The default firmware asset is 456 compressed tile bytes plus a six-byte palette;
-it expands to the same 756 bytes in OSD SRAM. The rainbow splash and no-signal
-artwork use 6,619 and 5,790 compressed tile bytes, respectively, each expanding
-to 9,720 bytes. Compression preserves every pixel and does not change colors,
-resolution or layout. Packet tags encode 1–128 bytes: bit 7 selects repetition
-of the following byte, otherwise the next bytes are literal; bits 6:0 hold
-the decoded length minus one.
+The default firmware asset is 415 bytes including its word dictionary, plus a
+six-byte palette; it expands to the same 756 bytes in OSD SRAM. The rainbow
+splash and no-signal artwork use 4,736 and 4,263 bytes including dictionaries,
+respectively, each expanding to 9,720 bytes. Compared with the previous byte
+RLE format, the colorful pair saves 3,410 asset bytes before decoder code.
+Compression preserves every pixel and does not change colors, resolution or
+layout. It retains only the preceding three-byte SRAM word while decoding.
+
+Each asset has `N` dictionary words (0–160), selected for nonconsecutive reuse.
+Packet tags below `N` select one dictionary word; `N`–191 introduce
+`tag - N + 1` literal words; 192–254 repeat the previous word `tag - 191` times;
+255 ends the stream.
+All words contain three bytes in hardware SRAM order. A repeat cannot be the
+first packet. The generated decoded length must match the image's tile count.
+An empty dictionary has one unused zero word to keep its C declaration valid.
+The colorful SDCC build uses 59,563 of 65,536 program bytes (5,973 free), a net
+saving of 3,257 bytes over the previous format and decoder. It uses ten bytes
+of internal RAM for decoder state; XRAM remains 405 of 512 bytes.
+
+To measure custom artwork on the actual controller, build with
+`BITMAP_TIMING=1`. This diagnostic build decodes each image once into a volatile
+sink, then loads it normally. After showing the splash and no-signal images,
+read VCP `FB` and `FC` for their decode times in milliseconds, and `FD` and `FE`
+for complete OSD load times (decoding, map, SRAM, palette and DDC service).
+For example, `python host.py vcp-get 0xfb` uses the tester's existing DDC client.
+The timer ticks every 2 ms; `65535` means the image has not loaded yet. The
+extra decode pass and the one-second visible splash hold are excluded from
+the complete load measurements. Ordinary builds omit the extra pass and
+timing controls; rebuild without `BITMAP_TIMING=1` after measuring.
+
+Measured on the UC-586 RTD2660H on 2026-09-30, using SDCC 4.5.0 with the HDMI
+source off (milliseconds, repeated loads):
+
+| Artwork | Word-dictionary decode | Byte-RLE reference decode | Complete OSD load, new / reference |
+| --- | ---: | ---: | ---: |
+| Rainbow splash | 286 | 418–420 | 2666–2668 / 2924 |
+| No-signal test card | 234–236 | 392 | 2616 / 2896 |
+
+The decode does not meet a 100 ms target on this MCU. It is nevertheless faster
+than the instrumented byte-RLE reference, and complete loading is about a
+quarter-second faster. Most remaining time is spent writing the OSD hardware.
+These are diagnostic-build measurements; the normal build omits the extra
+decode pass. The one-second visible splash hold remains unchanged. Host checks
+reconstructed every pixel and palette entry; both decoded demo images also
+matched the earlier RLE headers byte for byte. Board programming was checked
+with per-sector readback and the running firmware's bank0 CRC.
 
 The converter pads and centers the image within 12x18 tiles; the driver displays those
 tiles at 4x scale. The supplied logo appears as 328x256 pixels inside a

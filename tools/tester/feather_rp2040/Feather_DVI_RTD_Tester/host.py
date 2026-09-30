@@ -533,7 +533,10 @@ def program_flash(client, target, backup, recover=False, fast=False):
     if fast:
         try:
             client.command("reset-chip", timeout=15)
-            time.sleep(3.0)
+            # Allow both startup and no-signal artwork to finish. Timing
+            # builds add a decode-only pass that deliberately does not
+            # service DDC, so starting CRC mid-boot can leave a stale reply.
+            time.sleep(10.0)
             final_crc = firmware_crc(client, target, region="bank0")
         except Exception as error:
             raise TesterError("Bank0 ISP checks and protection restoration completed, "

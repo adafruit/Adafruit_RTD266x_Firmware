@@ -174,6 +174,13 @@ uint8_t control_get(uint8_t code, uint16_t *maximum, uint16_t *value) {
   uint8_t index = setting_index(code);
   if (code >= 0xf6 && code <= 0xfa)
     return firmware_crc_get(code, maximum, value);
+#if RTD_BITMAP_TIMING
+  if (code >= 0xfb && code <= 0xfe) {
+    *maximum = 0xffff;
+    *value = osd_bitmap_millis(code - 0xfb);
+    return 1;
+  }
+#endif
   if (index < SET_COUNT) {
     if (index == SET_BACKLIGHT && !board_backlight_available()) return 0;
     if (index == SET_VOLUME && !audio_volume_available()) return 0;

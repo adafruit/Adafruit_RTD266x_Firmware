@@ -13,7 +13,7 @@ one second after uploading its tiles before acquiring input video.
 timing generator running independently of input sync during this interval.
 
 `tools/bmp_to_header.py` prepares one-bit or four-bit 12x18 tiles during the
-build and compresses them with lossless run/literal packets. `src/rtd/osd.c`
+build and compresses them with lossless word dictionaries, literals and repeats. `src/rtd/osd.c`
 expands those packets directly into the OSD data port and builds a row/character map in
 OSD SRAM. `osd_show_splash()` and `osd_show_no_signal()` each load and show their
 own bitmap and palette; `osd_hide()` removes the overlay. The application owns
@@ -220,8 +220,8 @@ pixel on each side and four above and below. Each OSD row and the global frame
 request 2x scale, producing a 328x256 logo within a 336x288 rectangle. The
 row map starts at SRAM word zero, character selections at word `0x010`, and
 fonts at word `0x180`; they do not overlap. The 28 tiles occupy 756 bytes of
-dedicated OSD SRAM, not 8051 XRAM. The tile stream occupies 456 compressed bytes
-in flash, alongside a six-byte RGB palette. Host tests also receive the original 704-byte row-major
+dedicated OSD SRAM, not 8051 XRAM. The tile stream and word dictionary occupy
+415 compressed bytes in flash, alongside a six-byte RGB palette. Host tests also receive the original 704-byte row-major
 bitmap; the 8051 build excludes that reference copy.
 
 Four-bit palette tiles occupy 36 words each: four consecutive one-bit planes,

@@ -9,6 +9,7 @@
 #include "rtd/osd.h"
 #include "rtd/panel.h"
 #include "rtd/ddcci.h"
+#include "rtd/platform.h"
 
 #define OSD_CODE
 #include "splash_bitmap.h"
@@ -43,6 +44,14 @@ static unsigned font_cached, font_seen;
 static unsigned writes_since_poll, ddcci_polls, upload_polls;
 static const char *preview_path;
 static unsigned style_x = 50, style_y = 50, style_alpha;
+
+#if RTD_BITMAP_TIMING
+uint32_t platform_millis(void) {
+  static uint32_t ticks;
+  ticks += 2;
+  return ticks;
+}
+#endif
 
 uint16_t video_display_vstart(void) {
   return runtime_vstart;
@@ -777,12 +786,21 @@ static void export_page_examples(void) {
 int main(int argc, char **argv) {
   assert(argc <= 2);
   if (argc == 2) preview_path = argv[1];
+#if RTD_BITMAP_TIMING
+  assert(osd_bitmap_millis(0) == 0xffff && osd_bitmap_millis(1) == 0xffff);
+  assert(osd_bitmap_millis(2) == 0xffff && osd_bitmap_millis(3) == 0xffff);
+  assert(osd_bitmap_millis(4) == 0xffff);
+#endif
   check_asset(osd_show_splash, "splash", SPLASH_BITMAP_WIDTH,
               SPLASH_BITMAP_HEIGHT, SPLASH_BITMAP_BPP, SPLASH_PALETTE_COLORS,
               splash_palette, splash_bitmap);
   check_asset(osd_show_no_signal, "no signal", NO_SIGNAL_BITMAP_WIDTH,
               NO_SIGNAL_BITMAP_HEIGHT, NO_SIGNAL_BITMAP_BPP,
               NO_SIGNAL_PALETTE_COLORS, no_signal_palette, no_signal_bitmap);
+#if RTD_BITMAP_TIMING
+  assert(osd_bitmap_millis(0) == 2 && osd_bitmap_millis(1) == 2);
+  assert(osd_bitmap_millis(2) == 2 && osd_bitmap_millis(3) == 2);
+#endif
   check_menu_preview();
   check_input_messages();
   check_live_menu();

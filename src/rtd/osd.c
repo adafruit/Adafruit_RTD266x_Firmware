@@ -4,11 +4,14 @@
 #include "rtd/osd.h"
 #include "rtd/panel.h"
 #include "rtd/ddcci.h"
+#include "rtd/platform.h"
 
 #ifdef __SDCC_mcs51
 #define OSD_CODE __code
+#define OSD_DATA __data
 #else
 #define OSD_CODE
+#define OSD_DATA
 #endif
 #include "splash_bitmap.h"
 #include "no_signal_bitmap.h"
@@ -35,7 +38,11 @@
                  "Unsupported bitmap color format"); \
   _Static_assert(prefix##_TILE_BYTES == ((prefix##_BITMAP_WIDTH + 11u) / 12u) * \
                  ((prefix##_BITMAP_HEIGHT + 17u) / 18u) * 27u * prefix##_BITMAP_BPP, \
-                 "Bitmap dimensions do not match tile data")
+                 "Bitmap dimensions do not match tile data"); \
+  _Static_assert(prefix##_DICTIONARY_WORDS <= 160 && \
+                 sizeof(name##_dictionary) == \
+                   (prefix##_DICTIONARY_WORDS ? prefix##_DICTIONARY_WORDS : 1) * 3u, \
+                 "Bitmap word dictionary does not match its header")
 CHECK_BITMAP(SPLASH, splash);
 CHECK_BITMAP(NO_SIGNAL, no_signal);
 
@@ -45,6 +52,96 @@ static uint8_t menu_x = 50, menu_y = 50, menu_blend;
 static uint16_t frame_vstart;
 /* Bit0: global double size; bit1: live menu; bit2: input diagnostic. */
 static uint8_t frame_mode;
+
+#if RTD_BITMAP_TIMING
+static uint16_t bitmap_millis[4] = {0xffff, 0xffff, 0xffff, 0xffff};
+static volatile OSD_DATA uint8_t bitmap_benchmark_sink;
+
+uint16_t osd_bitmap_millis(uint8_t index) {
+  return index < 4 ? bitmap_millis[index] : 0xffff;
+}
+#endif
+
+/* OSD drawing is foreground-only; DDC callbacks defer all OSD operations.
+ * Keep this small, non-reentrant decoder state in fast internal RAM rather
+ * than repeatedly spilling it to the 8051 stack around register writes. */
+static OSD_DATA struct {
+  const OSD_CODE uint8_t *tiles, *dictionary;
+  uint8_t dictionary_words, count, a, b, c, uploaded;
+#if RTD_BITMAP_TIMING
+  uint8_t upload;
+#endif
+} bitmap;
+
+static void bitmap_output(void) {
+#if RTD_BITMAP_TIMING
+  if (!bitmap.upload) {
+    bitmap_benchmark_sink = bitmap.a;
+    bitmap_benchmark_sink = bitmap.b;
+    bitmap_benchmark_sink = bitmap.c;
+    return;
+  }
+#endif
+  rtd_write(0, 0x92, bitmap.a);
+  rtd_write(0, 0x92, bitmap.b);
+  rtd_write(0, 0x92, bitmap.c);
+  if (++bitmap.uploaded == 9) {
+    bitmap.uploaded = 0;
+    ddcci_service(); /* Nine complete words per font plane. */
+  }
+}
+
+/* The benchmark uses this same decoder with a volatile sink in place of the
+ * display writes. Production builds compile out that extra pass and branch.
+ * N dictionary words: tags < N select a word; N..191 carry 1..192-N literal
+ * words; 192..254 repeat the previous word 1..63 times; 255 ends the stream.
+ * Generated streams begin with a dictionary/literal word and expand to the
+ * exact expected word count, checked by the converter and host SRAM model.
+ */
+static void bitmap_stream(const OSD_CODE uint8_t *tiles,
+                          const OSD_CODE uint8_t *dictionary,
+                          uint8_t dictionary_words, uint8_t upload) {
+  uint8_t tag;
+  uint16_t offset;
+  const OSD_CODE uint8_t *entry;
+  bitmap.tiles = tiles;
+  bitmap.dictionary = dictionary;
+  bitmap.dictionary_words = dictionary_words;
+  bitmap.uploaded = 0;
+#if RTD_BITMAP_TIMING
+  bitmap.upload = upload;
+#else
+  (void)upload;
+#endif
+  for (;;) {
+    tag = *bitmap.tiles++;
+    if (tag == 255) break;
+    if (tag < bitmap.dictionary_words) {
+      /* Shift/add avoids SDCC's costly 16-bit multiplication helper. */
+      offset = tag;
+      offset <<= 1;
+      offset += tag;
+      entry = bitmap.dictionary + offset;
+      bitmap.a = entry[0];
+      bitmap.b = entry[1];
+      bitmap.c = entry[2];
+      bitmap_output();
+    } else if (tag < 192) {
+      bitmap.count = tag - bitmap.dictionary_words + 1;
+      do {
+        entry = bitmap.tiles;
+        bitmap.a = entry[0];
+        bitmap.b = entry[1];
+        bitmap.c = entry[2];
+        bitmap.tiles += 3;
+        bitmap_output();
+      } while (--bitmap.count);
+    } else {
+      bitmap.count = tag - 191;
+      do bitmap_output(); while (--bitmap.count);
+    }
+  }
+}
 
 static void select_word(uint16_t address) {
   /* This layout stays in the documented SRAM words 0x000..0xEFF. */
@@ -118,12 +215,12 @@ void osd_service(void) {
 }
 
 static void load_bitmap(uint8_t missing_input) {
-  const OSD_CODE uint8_t *tiles, *colors;
-  uint16_t tile_bytes;
-  uint8_t columns, rows, map_mode, map_background, palette_count;
-  uint8_t tile, row, color, channel, uploaded = 0;
-  uint8_t remaining = 0, repeat = 0, value = 0;
-  uint16_t byte;
+  const OSD_CODE uint8_t *tiles, *colors, *dictionary;
+  uint8_t columns, rows, map_mode, map_background, palette_count, dictionary_words;
+  uint8_t tile, row, color, channel;
+#if RTD_BITMAP_TIMING
+  uint16_t started;
+#endif
   text_loaded = 0;
 
   if (missing_input) {
@@ -133,8 +230,9 @@ static void load_bitmap(uint8_t missing_input) {
     map_background = NO_SIGNAL_BITMAP_BPP == 4 ? 0 : 0x10;
     palette_count = NO_SIGNAL_PALETTE_COLORS;
     tiles = no_signal_tiles;
+    dictionary = &no_signal_dictionary[0][0];
+    dictionary_words = NO_SIGNAL_DICTIONARY_WORDS;
     colors = &no_signal_palette[0][0];
-    tile_bytes = NO_SIGNAL_TILE_BYTES;
   } else {
     columns = (SPLASH_BITMAP_WIDTH + 11u) / 12u;
     rows = (SPLASH_BITMAP_HEIGHT + 17u) / 18u;
@@ -142,9 +240,16 @@ static void load_bitmap(uint8_t missing_input) {
     map_background = SPLASH_BITMAP_BPP == 4 ? 0 : 0x10;
     palette_count = SPLASH_PALETTE_COLORS;
     tiles = splash_tiles;
+    dictionary = &splash_dictionary[0][0];
+    dictionary_words = SPLASH_DICTIONARY_WORDS;
     colors = &splash_palette[0][0];
-    tile_bytes = SPLASH_TILE_BYTES;
   }
+#if RTD_BITMAP_TIMING
+  started = (uint16_t)platform_millis();
+  bitmap_stream(tiles, dictionary, dictionary_words, 0);
+  bitmap_millis[missing_input] = (uint16_t)platform_millis() - started;
+  started = (uint16_t)platform_millis();
+#endif
   active_width = columns * 48u;
   active_height = rows * 72u;
   osd_hide();
@@ -176,23 +281,11 @@ static void load_bitmap(uint8_t missing_input) {
   select_word(OSD_ALL_BYTES | OSD_SRAM | OSD_FONT_BASE);
   /* Build-time conversion provides complete planes, low palette bit first,
    * with each 24-bit SRAM word already in low/middle/high byte-lane order.
-   * Expand lossless run/literal packets straight into SRAM; no image buffer
-   * or per-pixel work. Packets may cross word/plane/tile boundaries.
+   * Expand lossless dictionary/literal/repeat packets straight into SRAM;
+   * no image buffer or per-pixel work. Only the previous three-byte word
+   * is retained. Packets may cross plane/tile boundaries.
    */
-  for (byte = 0; byte < tile_bytes; ++byte) {
-    if (!remaining) {
-      value = *tiles++;
-      repeat = value & 0x80;
-      remaining = (value & 0x7f) + 1;
-      if (repeat) value = *tiles++;
-    }
-    rtd_write(0, 0x92, repeat ? value : *tiles++);
-    --remaining;
-    if (++uploaded == 27) {
-      uploaded = 0;
-      ddcci_service(); /* Nine complete three-byte words per font plane. */
-    }
-  }
+  bitmap_stream(tiles, dictionary, dictionary_words, 1);
 
   /* Palette zero is the transparent background in both tile modes. */
   rtd_write(0, 0x6e, 0x80);
@@ -202,6 +295,9 @@ static void load_bitmap(uint8_t missing_input) {
     }
   }
   rtd_write(0, 0x6e, 0);
+#if RTD_BITMAP_TIMING
+  bitmap_millis[missing_input + 2] = (uint16_t)platform_millis() - started;
+#endif
 }
 
 static void show_frame(uint8_t doubled, uint8_t menu) {

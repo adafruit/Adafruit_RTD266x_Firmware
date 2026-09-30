@@ -4,6 +4,17 @@
 
 #include "rtd/video.h"
 
+#ifndef RTD_BITMAP_TIMING
+#define RTD_BITMAP_TIMING 0
+#endif
+
+#if RTD_BITMAP_TIMING
+/* Diagnostic build only: indices 0/1 are splash/no-signal decode time,
+ * 2/3 are their complete OSD load time, in milliseconds (2 ms ticks).
+ * 0xffff means that image has not loaded since reset. */
+uint16_t osd_bitmap_millis(uint8_t index);
+#endif
+
 /* Upload and show a centered bitmap. Each call replaces the OSD SRAM and
  * palette, so call on screen transitions, not every poll. The app owns the
  * background and duration; display timing must already be running.

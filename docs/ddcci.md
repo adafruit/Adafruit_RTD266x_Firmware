@@ -73,14 +73,26 @@ EEPROM; the application has no intentional program-flash write path.
 | `F7`, `F8` | Firmware CRC result, read-only | Low/high 16 bits respectively, maximum 65535; unavailable until ready |
 | `F9` | Firmware CRC progress, read-only | Completed 256-byte pages; maximum 256 for bank0 or 32 for vendor probe |
 | `FA` | Firmware CRC region, read-only | 0 before a job, 1 bank0, 2 vendor probe; maximum 2 |
+| `FB`, `FC` | Bitmap decode time, read-only; `BITMAP_TIMING=1` only | Last splash/no-signal decode time in milliseconds; 65535 before first load |
+| `FD`, `FE` | Bitmap OSD load time, read-only; `BITMAP_TIMING=1` only | Last splash/no-signal complete OSD load time in milliseconds; 65535 before first load |
 
 The mute and power values follow [ddcutil's MCCS reference](https://www.ddcutil.com/vcpinfo_output/).
-`E0`–`EB` and `F0`–`F9` are project-specific. Reserved `F5` reads English=0
+`E0`–`EB` and `F0`–`FE` are project-specific. Reserved `F5` reads English=0
 with maximum 0, rejects writes and is omitted from the capabilities string.
 LED backlight (`10`) is unsupported and omitted
 from the capabilities string; its menu row is disabled with a gray `--`.
 Mirror and rotation are also unavailable. Image brightness
 changes pixel values independently of LED backlight.
+
+The optional bitmap timing build runs an extra decode into a volatile sink
+before the normal display upload, using the same decoder. `FB`/`FC` include
+that sink overhead; `FD`/`FE` include decoding, SRAM writes, map/palette setup
+and DDC service, but exclude the extra benchmark pass and the one-second splash
+hold. The board timer has two-millisecond ticks. These diagnostics are omitted
+from the capabilities string; ordinary builds omit both the benchmark pass and
+these four controls. See [custom artwork](../assets/README.md) for usage.
+Fast programming waits ten seconds after reset before its final CRC query,
+allowing both startup and no-signal artwork to finish even in a timing build.
 
 For `E1`, page numbers are 0 closed, 1 category rail, 2 Picture, 3 Audio, 4 Display,
 5 Menu Settings, 6 No Signal, 7 Color, 8 OSD Setup, 9 System and 10 Reset

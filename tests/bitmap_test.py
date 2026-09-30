@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Exercise the public BMP conversion command with real image files."""
 import os
+import hashlib
 import importlib.util
 from pathlib import Path
 import re
@@ -19,24 +20,44 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
-def unpack_tiles(packed):
-    """Independent packet reader; reject incomplete literal/repeat packets."""
+def unpack_tiles(packed, dictionary, expected_size):
+    """Independent word-packet reader with explicit metadata/bounds checks."""
+    if len(dictionary) > 160 or any(len(word) != 3 for word in dictionary):
+        raise ValueError("Invalid word dictionary")
+    if expected_size < 0 or expected_size % 3:
+        raise ValueError("Invalid decoded byte count")
     data = bytearray()
     offset = 0
+    previous = None
+    terminated = False
     while offset < len(packed):
         control = packed[offset]
         offset += 1
-        length = (control & 127) + 1
-        if control & 128:
-            if offset == len(packed):
-                raise ValueError("Missing repeated value")
-            data.extend([packed[offset]] * length)
-            offset += 1
+        if control == 255:
+            if offset != len(packed):
+                raise ValueError("Trailing bytes after END")
+            terminated = True
+            break
+        if control < len(dictionary):
+            previous = dictionary[control]
+            data.extend(previous)
+        elif control >= 192:
+            if previous is None:
+                raise ValueError("Repeat before first word")
+            data.extend(previous * (control - 191))
         else:
+            length = (control - len(dictionary) + 1) * 3
             if offset + length > len(packed):
                 raise ValueError("Truncated literal packet")
             data.extend(packed[offset:offset + length])
             offset += length
+            previous = bytes(data[-3:])
+        if len(data) > expected_size:
+            raise ValueError("Packet exceeds decoded byte count")
+    if not terminated:
+        raise ValueError("Missing END marker")
+    if len(data) != expected_size:
+        raise ValueError("Decoded byte count does not match")
     return data
 
 
@@ -107,27 +128,88 @@ class BitmapTest(unittest.TestCase):
         self.assertRegex(header, r"#ifndef __SDCC_mcs51\s+/\*[^*]*\*/\s+"
                                  r"static const OSD_CODE uint8_t splash_bitmap")
         packed = bytes(int(value.strip(), 0) for value in match[1].split(",") if value.strip())
-        data = unpack_tiles(packed)
+        count = re.search(r"#define\s+SPLASH_DICTIONARY_WORDS\s+(\d+)", header)
+        self.assertIsNotNone(count)
+        count = int(count[1])
+        table = re.search(r"splash_dictionary\s*\[\s*\]\s*\[3\]\s*=\s*\{(.*?)\};",
+                          header, re.S)
+        self.assertIsNotNone(table)
+        values = bytes(int(value, 16) for value in re.findall(r"0x([0-9a-fA-F]+)", table[1]))
+        self.assertEqual(len(values), max(1, count) * 3)
+        dictionary = [values[index:index + 3] for index in range(0, count * 3, 3)]
         size = re.search(r"#define\s+SPLASH_TILE_BYTES\s+(\d+)", header)
         self.assertIsNotNone(size)
-        self.assertEqual(len(data), int(size[1]))
-        return data
+        return unpack_tiles(packed, dictionary, int(size[1]))
 
     def test_lossless_packets_and_boundaries(self):
-        self.assertEqual(MODULE.pack_tiles(b""), b"")
-        self.assertEqual(MODULE.pack_tiles(b"\0" * 128), b"\xff\0")
-        self.assertEqual(MODULE.pack_tiles(b"\xff" * 256), b"\xff\xff\xff\xff")
-        self.assertEqual(MODULE.pack_tiles(b"abc"), b"\x02abc")
-        self.assertEqual(MODULE.pack_tiles(b"aabbbcc"), b"\x01aa\x82b\x01cc")
-        for data in (bytes(1), bytes(2), bytes(3), bytes(127), bytes(129),
-                     bytes(255), bytes(257), bytes(range(128)), bytes(range(256)),
-                     bytes(range(127)) + b"\xfe" * 129 + bytes(range(129)),
+        self.assertEqual(MODULE.pack_tiles(b""), ([], b"\xff"))
+        self.assertEqual(unpack_tiles(b"\xff", [], 0), b"")
+        self.assertEqual(MODULE.pack_tiles(b"abc"), ([], b"\0abc\xff"))
+        self.assertEqual(MODULE.pack_tiles(b"abc" * 2), ([], b"\0abc\xc0\xff"))
+        self.assertEqual(MODULE.pack_tiles(b"abc" * 64), ([], b"\0abc\xfe\xff"))
+        self.assertEqual(MODULE.pack_tiles(b"abc" * 65), ([], b"\0abc\xfe\xc0\xff"))
+        self.assertEqual(MODULE.pack_tiles(b"abc" * 66), ([], b"\0abc\xfe\xc1\xff"))
+        self.assertEqual(MODULE.pack_tiles(b"abcxyzabcxyz"),
+                         ([b"abc", b"xyz"], bytes((0, 1, 0, 1, 255))))
+        unique = b"".join(index.to_bytes(3, "little") for index in range(384))
+        for words in (191, 192, 193, 384):
+            raw = unique[:words * 3]
+            dictionary, packed = MODULE.pack_tiles(raw)
+            self.assertFalse(dictionary)
+            self.assertEqual(unpack_tiles(packed, dictionary, len(raw)), raw)
+            self.assertEqual(len(packed), len(raw) + (words + 191) // 192 + 1)
+        for data in (bytes(3), bytes(6), bytes(9), bytes(381), bytes(387),
+                     bytes(765), bytes(771), bytes(range(255)), bytes(range(256)) * 3,
+                     bytes(range(126)) + b"\xfe" * 387 + bytes(range(129)),
                      bytes((i * 71 + i // 17) & 255 for i in range(9720))):
             with self.subTest(size=len(data), prefix=data[:4]):
-                packed = MODULE.pack_tiles(data)
-                self.assertEqual(unpack_tiles(packed), data)
-                # Incompressible input has at most one tag per 128 bytes.
-                self.assertLessEqual(len(packed), len(data) + (len(data) + 127) // 128)
+                dictionary, packed = MODULE.pack_tiles(data)
+                self.assertLessEqual(len(dictionary), 160)
+                self.assertEqual(unpack_tiles(packed, dictionary, len(data)), data)
+        for data in (b"x", b"xx", b"abcd"):
+            with self.assertRaisesRegex(ValueError, "complete three-byte"):
+                MODULE.pack_tiles(data)
+
+    def test_dictionary_counts_run_starts_and_caps_at_160(self):
+        # A single long run needs no dictionary entry; nonconsecutive reuse does.
+        self.assertEqual(MODULE.pack_tiles(b"abc" * 1000)[0], [])
+        self.assertEqual(MODULE.pack_tiles(b"abc" * 1000 + b"xyzabcxyz")[0],
+                         [b"abc", b"xyz"])
+        words = [bytes((index, 0, 0)) for index in range(161)]
+        raw = b"".join(words * 2)
+        dictionary, packed = MODULE.pack_tiles(raw)
+        self.assertEqual(dictionary, words[:160])
+        self.assertEqual(unpack_tiles(packed, dictionary, len(raw)), raw)
+        # Dictionary index159, literal at160, repeat boundaries192/254, END255.
+        packet = bytes((159, 160)) + b"xyz" + bytes((192, 254, 255))
+        self.assertEqual(unpack_tiles(packet, dictionary, 66 * 3),
+                         dictionary[159] + b"xyz" * 65)
+
+    def test_packet_reader_rejects_malformed_metadata_and_streams(self):
+        for packet, dictionary, size in (
+                (b"\xc0\xff", [], 3), (b"\xfe\xff", [], 189),
+                (b"\0ab", [], 3), (b"\xbfabc\xff", [], 576),
+                (b"\0\xff", [b"ab"], 3), (b"\0\xff", [b"abc"] * 161, 3),
+                (b"\0abc\xc0\xff", [], 3), (b"\0abc\xff", [], 6),
+                (b"\xff", [], 1), (b"\xff", [], -3)):
+            with self.subTest(packet=packet, words=len(dictionary), size=size):
+                with self.assertRaises(ValueError):
+                    unpack_tiles(packet, dictionary, size)
+        for packet, size in ((b"", 0), (b"\0abc", 3)):
+            with self.assertRaisesRegex(ValueError, "Missing END"):
+                unpack_tiles(packet, [], size)
+        for packet, size in ((b"\xff\xff", 0), (b"\0abc\xff\0xyz", 3)):
+            with self.assertRaisesRegex(ValueError, "Trailing bytes"):
+                unpack_tiles(packet, [], size)
+
+    def test_color_fixture_preserves_existing_tile_bytes(self):
+        # Golden decoded with the prior RLE converter. This fixed fixture has
+        # 15 foreground colors plus black, so it does not invoke quantization.
+        # Public assets remain freely replaceable without changing this test.
+        self.source = Path(__file__).resolve().parent / "color_splash.bmp"
+        self.convert()
+        self.assertEqual(hashlib.sha256(self.tile_bytes()).hexdigest(),
+                         "e72568978876bda1b0cde9b2e04e662889e761de8caaa18f7c03c42b6cff6fab")
 
     def test_centered_color_tile_planes_and_byte_lanes(self):
         image = Image.new("RGB", (2, 2))

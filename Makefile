@@ -13,6 +13,7 @@ AUDIO_VOLUME ?= 1
 ASPECT_4_3 ?= 1
 ASPECT_16_9 ?= 1
 EEPROM_DIAGNOSTICS ?= 0
+BITMAP_TIMING ?= 0
 SDCC ?= sdcc
 HOST_CC ?= cc
 OUT := build/$(BOARD)-$(PANEL)-$(APP)-splash$(SPLASH)
@@ -37,6 +38,9 @@ endif
 ifeq ($(EEPROM_DIAGNOSTICS),1)
 OUT := $(OUT)-eeprom-diagnostics
 endif
+ifeq ($(BITMAP_TIMING),1)
+OUT := $(OUT)-bitmap-timing
+endif
 
 SOURCES := src/platform/io.c src/platform/mcs51.c src/platform/ddc.c \
            src/platform/diagnostics.c src/platform/ddcci.c src/app/control.c src/app/firmware_crc.c \
@@ -58,7 +62,7 @@ AUDIO_TEST := $(OUT)/tests/audio_test
 DDCCI_TEST := $(OUT)/tests/ddcci_test
 CONTROL_TEST := $(OUT)/tests/control_test
 DEFINES := -DRTD_SPLASH=$(SPLASH) -DRTD_AUDIO_VOLUME=$(AUDIO_VOLUME) \
-           -DRTD_SETTINGS=$(SETTINGS) -DRTD_ASPECT_4_3=$(ASPECT_4_3) -DRTD_ASPECT_16_9=$(ASPECT_16_9) -DRTD_EEPROM_DIAGNOSTICS=$(EEPROM_DIAGNOSTICS)
+           -DRTD_SETTINGS=$(SETTINGS) -DRTD_ASPECT_4_3=$(ASPECT_4_3) -DRTD_ASPECT_16_9=$(ASPECT_16_9) -DRTD_EEPROM_DIAGNOSTICS=$(EEPROM_DIAGNOSTICS) -DRTD_BITMAP_TIMING=$(BITMAP_TIMING)
 CFLAGS := -mmcs51 --std-c11 --model-large --stack-auto --no-xinit-opt \
           -Iinclude -Iboards/$(BOARD) -I$(OUT)/generated \
           $(DEFINES) -DRTD_TRACE=$(TRACE) -DRTD_MENU_PREVIEW=$(MENU_PREVIEW)
@@ -140,4 +144,4 @@ build/tests/storage_test: tests/storage_test.c src/app/storage.c $(HEADERS)
 
 $(OSD_TEST): tests/osd_test.c src/rtd/osd.c panels/$(PANEL).c $(HEADERS) $(BITMAP_HEADER) $(NO_SIGNAL_HEADER) Makefile
 	@mkdir -p $(dir $@)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -DRTD_MENU_PREVIEW=1 -Iinclude -Iboards/$(BOARD) -I$(OUT)/generated $< src/rtd/osd.c panels/$(PANEL).c -o $@
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(DEFINES) -DRTD_MENU_PREVIEW=1 -Iinclude -Iboards/$(BOARD) -I$(OUT)/generated $< src/rtd/osd.c panels/$(PANEL).c -o $@

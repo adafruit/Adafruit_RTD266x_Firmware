@@ -55,6 +55,8 @@ class FakeClient:
         self.state = 0
         self.crc = 0
         self.reply = b""
+        self.boot_delay = 0
+        self.boot_ready_at = 0
 
     def hello(self, require_isp=False):
         return {"video": "off", "isp_active": self.isp_active}
@@ -80,6 +82,7 @@ class FakeClient:
         elif pieces[0] == "reset-chip":
             self.state = 0
             self.region_id = 0
+            self.boot_ready_at = self.clock.now + self.boot_delay
         return {"ok": True}
 
     def read_flash(self, size, address=0, progress=None):
@@ -91,6 +94,8 @@ class FakeClient:
         return bytes(result)
 
     def ddc_write(self, packet):
+        if self.clock.now < self.boot_ready_at:
+            raise host.TesterError("DDC unavailable during bitmap benchmark")
         assert host.ddc_checksum(packet, 0x6e) == 0
         self.clock.sleep(host.DDC_CI_GAP_SECONDS)
         command, code = packet[2:4]
@@ -332,6 +337,13 @@ class FirmwareCRCTest(unittest.TestCase):
         self.assertEqual(self.client.reads, [(0, host.BANK_SIZE)])
         self.assertEqual(self.client.commands, ["isp", "finish", "reset-chip"])
         self.assertEqual(self.client.requested_regions, [2, 1, 1])
+
+    def test_fast_program_waits_for_startup_artwork_before_live_crc(self):
+        self.client.boot_delay = 8
+        result = host.program_flash(self.client, self.target, self.backup, fast=True)
+        self.assertTrue(result["verified"])
+        self.assertEqual(self.client.jobs, 2)
+        self.assertEqual(self.client.commands.count("reset-chip"), 1)
 
     def test_fast_refuses_recovery_sizes_and_changed_tails_before_isp(self):
         with self.assertRaisesRegex(host.TesterError, "--recover"):
