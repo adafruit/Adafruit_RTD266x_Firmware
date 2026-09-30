@@ -33,7 +33,8 @@ ASCII set, so it cannot fit this hardware cell without changing glyphs.
 
 A glyph occupies eighteen 24-bit SRAM words, 54 bytes: the low bitplane followed
 by the high bitplane, each using the RTD controller's lane order. The preview
-shows exact pixels at the panel's 2× zoom and the actual 12-pixel cell advance.
+shows exact pixels enlarged 2× for inspection and the actual 12-pixel cell advance.
+The live menu displays these cells at native 1× size.
 
 Define `MENU_FONT_CODE` as `__code` before including `rtd/menu_font.h` in SDCC
 firmware. It defaults to empty for host tools. The table occupies 5,130 bytes

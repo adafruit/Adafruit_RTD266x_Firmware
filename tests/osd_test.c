@@ -512,10 +512,12 @@ static void check_menu_preview(void) {
 /* Optional visual check of the bytes actually written to hardware SRAM. */
 static void export_live_menu(const char *scene) {
   unsigned x, y;
+  unsigned zoom_x = (frame[3][1] & 1) ? 2 : 1;
+  unsigned zoom_y = (frame[3][1] & 2) ? 2 : 1;
   unsigned x_delay = ((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6);
   unsigned y_delay = ((unsigned)frame[0][0] << 3) | ((frame[0][2] >> 3) & 7);
-  unsigned origin_x = x_delay * 8 + BOARD_OSD_X_CORRECTION - panel.hstart;
-  unsigned origin_y = y_delay * 2 - runtime_vstart;
+  unsigned origin_x = x_delay * 4 * zoom_x + BOARD_OSD_X_CORRECTION - panel.hstart;
+  unsigned origin_y = y_delay * zoom_y - runtime_vstart;
   char filename[512];
   FILE *output;
   if (!preview_path) return;
@@ -528,9 +530,9 @@ static void export_live_menu(const char *scene) {
     for (x = 0; x < 800; ++x) {
       static const uint8_t black[3] = {0, 0, 0};
       const uint8_t *rgb = black;
-      if (x >= origin_x && x < origin_x + 720 &&
-          y >= origin_y && y < origin_y + 432) {
-        unsigned px = (x - origin_x) / 2, py = (y - origin_y) / 2;
+      if (x >= origin_x && x < origin_x + 360 * zoom_x &&
+          y >= origin_y && y < origin_y + 216 * zoom_y) {
+        unsigned px = (x - origin_x) / zoom_x, py = (y - origin_y) / zoom_y;
         unsigned entry = 0x10 + (py / 18) * 30 + px / 12;
         unsigned coverage = glyph_pixel(sram[entry][1], px % 12, py % 18);
         unsigned color = text_color(entry, coverage);
@@ -547,10 +549,10 @@ static void check_live_frame(char text[12][31]) {
   unsigned x_delay = ((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6);
   unsigned y_delay = ((unsigned)frame[0][0] << 3) | ((frame[0][2] >> 3) & 7);
   check_text_writes(12);
-  assert((regs[0x6c] & 1) && (frame[0][2] & 1) && frame[3][1] == 3);
+  assert((regs[0x6c] & 1) && (frame[0][2] & 1) && frame[3][1] == 0);
   assert(palette_bytes >= 48 && !(regs[0x6e] & 0x80));
-  assert(x_delay * 8 + BOARD_OSD_X_CORRECTION - panel.hstart == 40);
-  assert(y_delay * 2 - runtime_vstart == 24);
+  assert(x_delay * 4 + BOARD_OSD_X_CORRECTION - panel.hstart == 220);
+  assert(y_delay - runtime_vstart == 132);
   for (row = 0; row < 12; ++row) {
     assert(sram[row][0] == 0x80 && sram[row][1] == 0x88 && sram[row][2] == 30);
     for (column = 0; column < 30; ++column) {

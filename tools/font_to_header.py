@@ -151,10 +151,10 @@ def icon_header(art):
 
 
 def preview(cells, art, path):
-    """Show exact two-bit coverage at panel 2x zoom, without interpolation."""
+    """Show exact two-bit coverage at 2x inspection zoom, without interpolation."""
     sheet = Image.new("RGB", (832, 620), (12, 20, 36))
     draw = ImageDraw.Draw(sheet)
-    draw.text((16, 8), "RTD Menu Mono - native 12x18 / panel 2x zoom", fill="white")
+    draw.text((16, 8), "RTD Menu Mono - native 12x18 / preview 2x zoom", fill="white")
     for index, cell in enumerate(cells):
         x, y = 16 + (index % 16) * 48, 32 + (index // 16) * 50
         draw.rectangle((x, y, x + 25, y + 37), outline=(52, 76, 104))

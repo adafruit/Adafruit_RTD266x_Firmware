@@ -75,9 +75,9 @@ Contrast, audio mute, Keep/Fill aspect and the runtime options below are wired
 to the shared settings controller. Volume, rotation and mirror remain disabled.
 The separate P6.4/pin54 backlight power gate passed physical off/wake checks.
 
-Live menus use a centered 720x432 panel with a thin outline, dark navy body,
-title and four original category icons in a left rail. Each icon occupies four
-12x18 glyphs, producing a 48x72 panel-pixel image at 2x zoom. Blue backgrounds
+Live menus use a centered 360x216 panel at native 1x size, with a thin outline,
+dark navy body, title and four original category icons in a left rail. Each icon occupies four
+12x18 glyphs, producing a 24x36 panel-pixel image. Blue backgrounds
 mark focused icons or selected control rows; the active category turns cyan
 when focus moves to its controls. Unavailable controls keep gray labels and
 values. Values align at the right edge; percentage controls have a track below

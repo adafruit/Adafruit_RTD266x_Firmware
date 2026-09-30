@@ -58,17 +58,21 @@ static void write_word(uint16_t address, uint8_t a, uint8_t b, uint8_t c) {
   ddcci_service();
 }
 
-static void set_frame(uint8_t enabled) {
-  /* Global 2x zoom also doubles both frame delays. Horizontal delay counts
+static void set_frame(uint8_t doubled) {
+  /* Global zoom also scales both frame delays. Horizontal delay counts
    * groups of four pixels before zoom; vertical delay counts lines.
    * Center in the active raster, including blanking and the board's measured
    * horizontal OSD correction. The OSD origin differs from the video origin.
    */
   uint16_t x = (panel.hstart + (panel.width - active_width) / 2 -
-                BOARD_OSD_X_CORRECTION) / 8;
-  uint16_t y = (video_display_vstart() + (panel.height - active_height) / 2) / 2;
+                BOARD_OSD_X_CORRECTION) / 4;
+  uint16_t y = video_display_vstart() + (panel.height - active_height) / 2;
+  if (doubled) {
+    x /= 2;
+    y /= 2;
+  }
   write_word(0, (uint8_t)(y >> 3), (uint8_t)(x >> 2),
-             (uint8_t)(((x & 3) << 6) | ((y & 7) << 3) | enabled));
+             (uint8_t)(((x & 3) << 6) | ((y & 7) << 3) | 1));
 }
 
 void osd_hide(void) {
@@ -166,29 +170,29 @@ static void load_bitmap(uint8_t missing_input) {
   rtd_write(0, 0x6e, 0);
 }
 
-static void show_bitmap(void) {
+static void show_centered(uint8_t doubled) {
   if (active_width > panel.width || active_height > panel.height) {
     return;
   }
-  /* Global 2x width/height scales the already doubled character rows. */
-  write_word(3, 0, 0x03, 0);
-  set_frame(1);
+  /* Bitmap rows add their own 2x scale; live text uses native-size rows. */
+  write_word(3, 0, doubled ? 0x03 : 0, 0);
+  set_frame(doubled);
   visible = 1;
   rtd_update(0, 0x6c, 0x01, 0x01);
 }
 
 void osd_show_splash(void) {
   load_bitmap(0);
-  show_bitmap();
+  show_centered(1);
 }
 
 void osd_show_no_signal(void) {
   load_bitmap(1);
-  show_bitmap();
+  show_centered(1);
 }
 
-/* The font is rasterized from the bundled OFL Roboto Condensed source.
- * Native 12x18, two-bit glyphs retain four coverage levels before 2x zoom.
+/* The font is rasterized from the bundled OFL Roboto Mono source.
+ * Native 12x18, two-bit glyphs retain four coverage levels.
  * Four original 24x36 icons use four consecutive character cells each.
  */
 enum {
@@ -582,7 +586,7 @@ void osd_show_menu_preview(uint8_t page, uint8_t variant) {
   }
   active_width = TEXT_COLUMNS * 24u;
   active_height = MENU_ROWS * 36u;
-  show_bitmap();
+  show_centered(1);
 }
 
 static void menu_position(uint8_t row, uint8_t column) {
@@ -691,7 +695,7 @@ void osd_menu_end(const char *footer) {
   menu_position(10, 7);
   text_color = footer[0] == 'A' ? 0x42 : 0x52;
   while (*footer && text_column < TEXT_COLUMNS - 1) text_put(*footer++);
-  active_width = TEXT_COLUMNS * 24u;
-  active_height = LIVE_MENU_ROWS * 36u;
-  show_bitmap();
+  active_width = TEXT_COLUMNS * 12u;
+  active_height = LIVE_MENU_ROWS * 18u;
+  show_centered(0);
 }

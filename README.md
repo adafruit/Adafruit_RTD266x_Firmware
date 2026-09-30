@@ -66,8 +66,9 @@ test card. These messages do not expand the supported video modes.
 Menus and timing messages use a true monospaced Roboto Mono font in native
 12×18 antialiased cells, with lowercase, uppercase, digits and punctuation.
 The glyphs share one pen origin and baseline, preserving their designed side
-bearings. Their 2-bpp coverage maps to four palette
-colors before the OSD's 2× zoom. Generated font and icon headers are checked in,
+bearings. Their 2-bpp coverage maps to four palette colors. The live menu uses
+native 1× size, centered at 360×216 pixels; timing messages retain 2× zoom.
+Generated font and icon headers are checked in,
 so ordinary firmware builds do not need a font converter. To regenerate them
 and inspect a glyph sheet, run `python tools/font_to_header.py --preview
 build/menu-font.png` with the versions listed in the
