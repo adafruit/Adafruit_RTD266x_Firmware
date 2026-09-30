@@ -79,8 +79,9 @@ standard commands for unrelated monitors.
 Menu selects/finishes an adjustment, up/down move or adjust, and back returns
 one level. `0x8D=1` mutes audio; `0x8D=2` unmutes. `0xD6=4` requests soft power
 off and `0xD6=1` resumes. The [firmware control map](../../../../docs/ddcci.md)
-lists every code and decodes menu state. Settings are session-only; startup
-splash selection applies to soft-power resume, while cold boot uses `SPLASH`.
+lists every code and decodes menu state. The default UC-586 firmware saves
+settings after two seconds and restores them before the startup splash.
+`SETTINGS=0` builds keep preferences only until reset.
 LED brightness adjustment is disabled because PWM1 requests produced no visible
 change. The separate P6.4 backlight gate passed physical off/on and signal-wake
 checks on the UC-586.

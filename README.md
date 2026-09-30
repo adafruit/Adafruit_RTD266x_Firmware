@@ -50,7 +50,8 @@ shrink to fit 192x108 pixels without cropping and are displayed at 4x scale.
 RGB565 input is converted to the OSD palette; this is not a full-color framebuffer.
 See the [custom splash guide](assets/README.md) for the complete BMP-to-firmware
 workflow, example commands, timing and image limits. Use
-`make SPLASH=0` to omit it; that build uses a separate `-splash0` directory.
+`make SPLASH=0` to default it off; saved menu preferences take precedence.
+That build uses a separate `-splash0` directory.
 
 When input is absent, a separate Adafruit TV test card displays "NO SIGNAL" on
 the black background. It disappears when valid video returns. Customize it with
@@ -121,10 +122,10 @@ See the [control map and host commands](docs/ddcci.md).
 Image brightness and contrast adjust video pixels. LED backlight adjustment
 is disabled: PWM1 requests at 100%, 25% and 0% produced no visible brightness
 change in three camera captures. The live menu also controls volume, mute, aspect,
-connection popups, menu timeout and no-signal appearance/sleep. Settings last
-for the current session in the default build. Startup Splash affects soft-power
-resume; cold boot uses the build-time `SPLASH` default unless EEPROM settings
-support has been qualified and enabled. No-signal sleep requests
+connection popups, menu timeout and no-signal appearance/sleep. Changes save
+to the UC-586's EEPROM after two seconds and restore at startup, including
+the splash preference before anything is drawn. `make SETTINGS=0` disables
+saving and uses a separate `-volatile` build directory. No-signal sleep requests
 backlight power off and on when valid input returns. Its separate stock-derived
 P6.4 gate passed physical backlight-off and wake checks on the UC-586.
 
@@ -135,9 +136,10 @@ The first audio profile implements stereo 48 kHz LPCM through the UC-586's
 CS4334 DAC. See [audio support and validation](docs/audio.md) for its current
 bench status and limits. LED backlight, mirror and rotation are disabled
 in the menu; LED backlight shows a gray `--`.
-An experimental EEPROM settings implementation is host-tested, but disabled
-by default pending UC-586 wiring/readback qualification. See
-[settings storage](docs/ddcci.md#settings-storage) before enabling it.
+EEPROM saving and restoration after whole-chip reset are bench-tested. The
+firmware preserves stock data and refuses an occupied, unrecognized save area.
+See [settings storage](docs/ddcci.md#settings-storage) for the reservation,
+backup procedure and power-loss behavior.
 Arbitrary video modes are not implemented. All six live pages, navigation, editing and
 setting readback passed the [DDC/CI bench checks](docs/ddcci.md#transport-and-validation),
 including uninterrupted audio during menu drawing. Camera and audio checks also

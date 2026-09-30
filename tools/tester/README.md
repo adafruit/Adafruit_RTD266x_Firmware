@@ -39,7 +39,7 @@ python tools/tester/feather_rp2040/Feather_DVI_RTD_Tester/host.py vcp-set 0x8d 2
 ```
 
 The last two commands mute and unmute. See the [firmware control map](../../docs/ddcci.md)
-for supported codes, session-only settings and validation limits. The RP2040
+for supported codes, EEPROM settings storage and validation limits. The RP2040
 tester does not yet implement the live DDC transport.
 
 Imported from Adafruit_Arduino_Tester_Code commit

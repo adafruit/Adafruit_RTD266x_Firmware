@@ -31,8 +31,9 @@ enter edit mode. No Signal is a submenu of Menu Settings.
 ## Control map
 
 Codes below are hexadecimal; values are decimal unless prefixed with `0x`.
-Settings are session-only in the default build. Experimental EEPROM storage
-is described below; the controller never writes its program flash.
+Settings persist in the separate board EEPROM by default (`SETTINGS=1`).
+Use `SETTINGS=0` for session-only preferences. The controller never writes its
+program flash.
 
 | VCP | Control | Accepted values / readback |
 | --- | --- | --- |
@@ -45,12 +46,12 @@ is described below; the controller never writes its program flash.
 | `E1` | Menu state, read-only | `(page << 8) \| (selection << 1) \| editing` |
 | `E2` | Image brightness | 0–100, neutral/default 50 |
 | `E3` | Aspect | 0 Keep (default), 1 Fill |
-| `E4` | Startup Splash | 0 off, 1 on; default follows build-time `SPLASH`; qualified storage also restores it before cold-boot display |
+| `E4` | Startup Splash | 0 off, 1 on; default follows build-time `SPLASH`; saved value restores before startup display |
 | `E5` | Connection Popup | 0 off, 1 on (default) |
 | `E6` | No Signal Background | 0 black, 1 blue, 2 test bitmap (default) |
 | `E7` | No Signal Sleep After | 0 Never (default), 1=1s, 2=2s, 3=5s, 4=10s, 5=20s |
 | `E8` | Menu Timeout | 0 Never, 1=5s, 2=10s (default), 3=20s |
-| `EB` | Settings storage status, read-only | Low byte: 0 unavailable/disabled, 1 blank, 2 loaded/saved, 3 error; bit8 means a save is pending |
+| `EB` | Settings storage status, read-only | Low byte: 0 unavailable/disabled, 1 blank, 2 loaded/saved, 3 error; bit8 means a save is pending or in progress |
 
 The mute and power values follow [ddcutil's MCCS reference](https://www.ddcutil.com/vcpinfo_output/).
 `E0`–`EB` are project-specific. LED backlight (`10`) is unsupported and omitted
@@ -65,18 +66,19 @@ bits are relevant while a menu is open. `menu-state` returns the raw VCP value.
 On the rail, selection 0–3 identifies Picture, Audio, Display or Menu Settings;
 for example, `0x0104` previews Display, and Menu changes to `0x0400` to enter it.
 
-Startup Splash changes resume after `D6=4` then `D6=1`; cold boot still follows
-the build-time `SPLASH` option. No-signal sleep requests backlight power off after
-the selected delay and on when valid video is acquired. An
+Startup Splash controls startup and resume after `D6=4` then `D6=1`. With
+`SETTINGS=0`, a reset restores the build-time `SPLASH` default. No-signal sleep
+requests backlight power off after the selected delay and on when valid video
+is acquired. An
 open menu postpones sleep and wakes the backlight. Soft power off also stops
 audio and blanks video; DDC/CI remains serviced for resume. The retained vendor
 flash tail is not used for settings storage.
 
 ## Settings storage
 
-`SETTINGS=0` is the default while EEPROM wiring remains unqualified. The
-`SETTINGS=1` implementation restores picture, aspect, volume/mute, splash,
-popup and timeout preferences before startup display. Changes are coalesced
+`SETTINGS=1` is the default for the qualified UC-586 board. It restores picture,
+aspect, volume/mute, splash, popup and timeout preferences before startup display.
+Changes are coalesced
 for two seconds, then saved to a separate 24LC16B EEPROM. Soft power and menu
 focus are not saved. Power loss during the two-second delay can discard the
 most recent adjustments.
@@ -85,26 +87,64 @@ The driver follows GPIO routines found in the UC-586 stock disassembly:
 P6.6/RTD pin56 (`FFCD`) for SCL and P6.7/pin57 (`FFCE`) for SDA, open-drain
 selection `FF9A=05`. The board photograph identifies a 24LC16B, whose
 [Microchip datasheet](https://ww1.microchip.com/downloads/en/devicedoc/20002213b.pdf)
-specifies 2048 bytes and 16-byte write pages. **The bench EEPROM has not yet
-acknowledged reads on this GPIO pair.** Both lines return high at idle, and the
-first device-address byte is rejected; a repeated-START setup-delay fix did
-not resolve that failure. No EEPROM data has been written. Confirm wiring,
-obtain two matching full backups, and qualify an unused reservation before
-enabling writes on this or another board.
+specifies 2048 bytes and 16-byte write pages. `FFC0` bit 3 must also be set:
+it selects physical P6 input readback instead of the output latch. Without
+that setting, the released SDA latch looked like a NACK even when the EEPROM
+was acknowledging. The driver now reads and writes the board's EEPROM.
 
-The proposed reservation is the final 64 bytes, `0x7C0..0x7FF`, split into
+Two matching original 2048-byte backups were obtained before the first write,
+with SHA256
+`6d1f20d29512af538be93feb1aadfdb7ef7ed3ae697f76c93b581cf821d2a8ca`.
+The qualified reservation is `0x4C0..0x4FF`, within a blank region, split into
 two 32-byte records. Schema/count, sequence, CRC16 and a commit-last marker
 select the newest complete record. Loaded values are range-checked before
 applying them. Unknown occupied data or recognizable newer schemas are not
-overwritten. Failed writes leave the runtime preferences usable and report
-`EB=3`; another setting change permits a new attempt. A valid older record
+overwritten. The previously proposed `0x7C0..0x7FF` range contains stock data
+and is not used. Confirm wiring, make two matching complete backups, and
+qualify the reservation separately before enabling storage on another board.
+A complete readback after two hardware saves confirmed that all 1984 bytes
+outside the reservation still matched the original backup. Both records passed
+CRC and commit-marker checks.
+
+Failed writes leave the runtime preferences usable and report 3 in the low
+byte of `EB`; another setting change permits a new attempt. A valid older record
 survives an interrupted update. A first-ever torn write before any valid
 ownership record may conservatively disable saves rather than overwrite
 unrecognized data.
 
-Host tests cover corruption, interrupted page operations, write protection,
-readback failure, sequence/timer wrap, coalescing and startup restoration.
-These are not yet hardware save/power-cycle results.
+Saves take an immutable snapshot and service DDC between completed EEPROM
+transactions, after STOP releases the bus. Save-time reads and writes use
+four-byte chunks, with additional polling around CRC preparation. A setting
+changed by a DDC callback remains queued for another save
+after its own two-second delay. `EB` bit 8 remains set while either save is
+pending or in progress. No DDC callback runs inside an EEPROM transaction.
+
+Hardware saves and restoration of ten changed preferences passed a whole-chip
+reset with application XRAM cleared. A physical power-disconnect test remains
+pending. The v39 release passed 120 alternating volume/status reads at the normal
+50 ms transaction spacing during a save. A second test changed volume through
+the Audio menu from 25 to 20, then to 15 about 2.45 seconds later while the first
+save was underway. Ninety subsequent reads passed, and 15 restored after reset.
+An 18-second analog recording during the first test had no measured dropouts:
+50 ms windows ranged from -27.506 to -27.434 dBFS at 25% volume, excluding the
+first and last second. Host tests cover corruption, interrupted page operations, write
+protection, readback failure, sequence/timer wrap, coalescing, startup restoration
+and settings changed at each of the 36 save-service boundaries. Interrupted
+writes are checked at all ten write operations, including successful recovery
+when the inactive slot started blank beside one valid record.
+
+Startup explicitly clears the application's 512-byte XRAM allocation before
+SDCC's explicit initializers: `--no-xinit-opt` omits the usual XRAM clear.
+Long-lived monitor state now lives in XRAM, and the video-measurement pointer
+uses its XRAM address space. These changes avoid stale flags after reset and
+8051 stack overflow when DDC callbacks run during video measurement.
+
+The v39 image passed full 512 KiB readback with flash protection restored to
+`0x0C`; full-image SHA256 is
+`261633f6b4c6e9241fc396f08d9ae272e80617f4523caffaf037e2403e1dfa29`.
+The default and rainbow-splash SDCC builds pass host checks, using 54,365 and
+63,162 bytes of code respectively, with 353 of 512 XRAM bytes used. The
+`SETTINGS=0` variant also passes.
 
 For a read-only bench build, use `SETTINGS=0 EEPROM_DIAGNOSTICS=1`.
 Set VCP `E9` to a byte address 0..2046; Get `EA` returns two bytes, high byte
@@ -112,6 +152,9 @@ first, and advances by two (wrapping to zero). Get `EC` reports read-failure
 stage in the high byte and mux/line state in the low byte. These diagnostic
 codes do not write EEPROM and are absent from normal builds. The 16-bit
 readout uses existing `host.py` VCP commands; no programmer changes are needed.
+Use 120 ms transaction gaps for live-video `EA` reads; 50 ms bulk diagnostic
+reads have failed. This slower diagnostic setting is separate from ordinary
+VCP controls.
 
 The PWM1 experiment accepted VCP requests for 100%, 25% and 0%, but three camera
 captures showed unchanged brightness. Level adjustment is therefore disabled;
@@ -130,8 +173,10 @@ reply: a bus ACK alone does not establish that a setting was accepted; read it
 back to check. Unsupported gets report unsupported; invalid sets leave settings
 unchanged. No host command is automatically retried.
 
-The host spaces transactions by 50 ms. The tester's raw `ddc HEXPACKET 0` and
-`ddc - N` operations are bounded to 32 bytes and refuse a known active ISP
+The host defaults to 50 ms transaction spacing for ordinary VCP controls;
+live EEPROM diagnostics use 120 ms as described above. The current cooperative
+save release's hardware stress qualification remains pending. The tester's raw
+`ddc HEXPACKET 0` and `ddc - N` operations are bounded to 32 bytes and refuse a known active ISP
 session. Capabilities replies are fragmented in groups of at most ten text
 bytes. See the [RP2350 tester instructions](../tools/tester/feather_rp2350/Feather_HSTX_RTD_Tester/README.md)
 for transport details. Programming still requires `mode off` and the existing

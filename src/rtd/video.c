@@ -310,7 +310,7 @@ static uint16_t measured_count(uint8_t reg) {
          rtd_read(0, reg + 1);
 }
 
-uint8_t video_measure(video_signal_t *signal) {
+uint8_t video_measure(video_signal_t VIDEO_XDATA *signal) {
   uint16_t width;
   uint16_t total;
   uint16_t period;

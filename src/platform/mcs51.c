@@ -18,10 +18,18 @@ __sfr __at(0x8e) RTD_CKCON;
 static volatile uint32_t uptime_ms;
 
 unsigned char __sdcc_external_startup(void) {
+  uint16_t address;
   IE = 0;
   *((volatile __xdata uint8_t *)0xffea) = 0;
   *((volatile __xdata uint8_t *)0xffea) = 0x40; /* watchdog disabled */
   *((volatile __xdata uint8_t *)0xfffe) = 0; /* XDATA flash bank */
+  /* --no-xinit-opt omits SDCC's XRAM clearing as well as its copy helper.
+   * Clear only our 512-byte linker allocation, before explicit initializers.
+   * Otherwise warm resets retain flags such as DDC initialized/font loaded,
+   * and a cold boot depends on power-on SRAM contents. EDID begins at FD80.
+   */
+  for (address = 0xfb00; address < 0xfd00; ++address)
+    *((volatile __xdata uint8_t *)address) = 0;
   return 0; /* run SDCC data initialization */
 }
 

@@ -33,7 +33,9 @@ to make your image the default. Ordinary `make` selects the supplied default
 path again. For a filename with spaces, quote the assignment:
 `make "SPLASH_BMP=assets/my splash.bmp" check`.
 
-Use `make SPLASH=0` to omit the splash. To change its hold time, edit
+Use `make SPLASH=0` to default the splash off. Saved Startup Splash preferences
+take precedence; use the menu or VCP `E4=0` to disable it on a configured board.
+`SETTINGS=0` builds always use the build-time default. To change its hold time, edit
 `SPLASH_DURATION_MS` in `src/app/monitor.c` (milliseconds), then rebuild.
 The startup `video_background(0, 0, 0)` calls in that file select black.
 

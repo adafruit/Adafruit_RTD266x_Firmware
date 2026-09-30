@@ -43,14 +43,17 @@ static uint8_t input_info_changed(const video_signal_t *signal) {
  * Identify the timing profile as well as width when qualifying a source.
  */
 void main(void) {
-  video_signal_t signal;
-  uint8_t displayed_mode = VIDEO_MODE_NONE, candidate_mode = VIDEO_MODE_NONE;
-  uint8_t matching_samples = 0, screen = 0, audio_tick;
-  uint32_t info_started = 0;
-  uint32_t missing_started = 0, timeout;
-  uint8_t missing = 0, sleeping = 0, was_powered = 1;
+  /* This state lives for the entire program. Keep it in XRAM: DDC callbacks
+   * can run inside video measurement, and the 8051 return stack is only 256
+   * bytes including interrupt context and every active call's local data. */
+  static video_signal_t signal;
+  static uint8_t displayed_mode = VIDEO_MODE_NONE, candidate_mode = VIDEO_MODE_NONE;
+  static uint8_t matching_samples = 0, screen = 0, audio_tick;
+  static uint32_t info_started = 0;
+  static uint32_t missing_started = 0, timeout;
+  static uint8_t missing = 0, sleeping = 0, was_powered = 1;
 #if RTD_MENU_PREVIEW
-  uint8_t preview_page, preview_variant;
+  static uint8_t preview_page, preview_variant;
 #endif
 
   platform_init();

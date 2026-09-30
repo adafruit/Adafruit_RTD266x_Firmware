@@ -15,7 +15,7 @@ static uint8_t hide_requested;
 static uint8_t previous_keys;
 static uint32_t last_key;
 #if RTD_SETTINGS
-static uint8_t save_pending;
+static uint8_t save_pending, saving;
 static uint32_t changed_at;
 #endif
 #if RTD_EEPROM_DIAGNOSTICS
@@ -83,7 +83,7 @@ void control_init(void) {
   defaults();
 #if RTD_SETTINGS
   if (!store_load(settings, SET_COUNT) || !settings_valid()) defaults();
-  save_pending = 0;
+  save_pending = saving = 0;
   changed_at = 0;
 #endif
   page = selection = editing = dirty = overlay_changed = previous_keys = 0;
@@ -169,7 +169,7 @@ uint8_t control_get(uint8_t code, uint16_t *maximum, uint16_t *value) {
   case 0xeb:
     *maximum = 0x103;
 #if RTD_SETTINGS
-    *value = store_status() | (save_pending ? 0x100 : 0);
+    *value = store_status() | ((save_pending || saving) ? 0x100 : 0);
 #else
     *value = STORE_UNAVAILABLE;
 #endif
@@ -449,9 +449,11 @@ void control_service(uint32_t now) {
 #if RTD_SETTINGS
   /* Coalesce adjustments, and never write from a DDC callback while drawing.
    * A failed save is reported; another setting change permits a new attempt. */
-  if (save_pending && (uint32_t)(now - changed_at) >= 2000) {
+  if (!saving && save_pending && (uint32_t)(now - changed_at) >= 2000) {
     save_pending = 0;
+    saving = 1;
     store_save(settings, SET_COUNT);
+    saving = 0;
     now = platform_millis();
   }
 #endif

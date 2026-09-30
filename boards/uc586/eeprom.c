@@ -4,9 +4,9 @@
 #include "rtd/storage.h"
 
 /* UC-586 stock I2C routines use P6.6/pin56 as SCL (FFCD) and P6.7/pin57 as
- * SDA (FFCE); physical connectivity still needs qualification after a NACK
- * on the bench. board_init sets FF9A=05, selecting
- * open-drain GPIO for both. Microchip 24LC16B: 2048 bytes, 16-byte pages,
+ * SDA (FFCE), confirmed by matching full EEPROM reads. board_init sets
+ * FF9A=05 for open-drain GPIO and FFC0 bit3 for physical pin readback.
+ * Microchip 24LC16B: 2048 bytes, 16-byte pages,
  * 5 ms maximum write cycle; bits10:8 of the address are in the control byte.
  */
 #define SCL 0xcd
@@ -143,8 +143,8 @@ uint8_t board_eeprom_write_page(uint16_t address, const uint8_t *data,
   }
   stop();
   began = platform_millis();
-  /* ACK polling is bounded and sends no data. No DDC callbacks can recurse
-   * into this EEPROM transaction while a settings save is in progress. */
+  /* ACK polling is bounded and sends no data. DDC callbacks run only after
+   * this complete transaction returns to the settings store. */
   do {
     ok = start() && send(device);
     stop();

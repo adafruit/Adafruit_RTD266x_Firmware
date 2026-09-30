@@ -4,6 +4,12 @@
 
 #include <stdint.h>
 
+#ifdef __SDCC_mcs51
+#define VIDEO_XDATA __xdata
+#else
+#define VIDEO_XDATA
+#endif
+
 enum {
   VIDEO_OK = 0,
   VIDEO_DIGITAL_TIMEOUT = 1,
@@ -60,8 +66,10 @@ void video_service(void);
 void video_set_picture(uint8_t brightness, uint8_t contrast);
 /* Zero keeps the source aspect; nonzero fills the panel horizontally. */
 void video_set_aspect(uint8_t fill);
-/* Returns zero for absent, timed-out, or unsupported input. */
-uint8_t video_measure(video_signal_t *signal);
+/* Returns zero for absent, timed-out, or unsupported input. The result lives
+ * in XRAM so SDCC can address fields directly without a large generic-pointer
+ * stack frame underneath DDC callbacks. */
+uint8_t video_measure(video_signal_t VIDEO_XDATA *signal);
 uint8_t video_apply(const video_signal_t *signal);
 /* Actual output origin, including the shorter blanking of the CVT profile. */
 uint16_t video_display_vstart(void);

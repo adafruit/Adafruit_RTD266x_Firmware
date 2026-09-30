@@ -17,6 +17,7 @@ static uint32_t clock_ms;
 static uint8_t keys, backlight_available, backlight_ok, muted, volume;
 static uint8_t volume_available;
 static uint8_t saved[SET_COUNT], saved_present, storage_state, storage_ok;
+static uint8_t change_during_save;
 static unsigned saves;
 static uint8_t brightness, contrast, fill, backlight;
 static unsigned picture_writes, aspect_writes, backlight_writes;
@@ -38,11 +39,19 @@ uint8_t store_load(uint8_t *values, uint8_t count) {
   return saved_present;
 }
 uint8_t store_save(const uint8_t *values, uint8_t count) {
+  uint16_t maximum, status;
   assert(count == SET_COUNT);
   ++saves;
+  assert(control_get(0xeb, &maximum, &status) && (status & 0x100));
+  /* Mirror storage's entry snapshot before servicing a DDC callback. */
+  if (storage_ok) memcpy(saved, values, count);
+  if (change_during_save) {
+    change_during_save = 0;
+    clock_ms += 100;
+    assert(control_set(0xe2, 77));
+  }
   storage_state = storage_ok ? STORE_LOADED : STORE_ERROR;
   if (!storage_ok) return 0;
-  memcpy(saved, values, count);
   saved_present = 1;
   return 1;
 }
@@ -120,6 +129,7 @@ static void fixture(void) {
   volume_available = 0;
   saved_present = saves = 0;
   storage_ok = 1;
+  change_during_save = 0;
   backlight_available = backlight_ok = 1;
   picture_writes = aspect_writes = backlight_writes = mute_writes = 0;
   stops = hides = renders = row_count = 0;
@@ -537,6 +547,22 @@ static void test_persistence(void) {
   clock_ms += 2000;
   control_service(clock_ms);
   assert(saves == 1); /* Coalescing survives uptime rollover. */
+  fixture();
+  assert(control_set(0xe2, 65));
+  clock_ms = 2000;
+  change_during_save = 1;
+  control_service(clock_ms);
+  assert(saves == 1 && saved[SET_BRIGHTNESS] == 65 && brightness == 77);
+  assert(value(0xeb, 0x103) == (STORE_LOADED | 0x100));
+  clock_ms += 1999;
+  control_service(clock_ms);
+  assert(saves == 1); /* Callback starts a fresh coalescing deadline. */
+  ++clock_ms;
+  control_service(clock_ms);
+  assert(saves == 2 && saved[SET_BRIGHTNESS] == 77);
+  assert(value(0xeb, 0x103) == STORE_LOADED);
+  control_init();
+  assert(brightness == 77);
 #endif
 #if RTD_EEPROM_DIAGNOSTICS
   fixture();

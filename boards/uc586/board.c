@@ -31,6 +31,11 @@ void board_init(void) {
   mcu_update(0x96, 7, 2);
   for (i = 0; i < sizeof(pin_modes); ++i) mcu_write(0x97 + i, pin_modes[i]);
 
+  /* Manual p340: P6 reads must sample the pins, not the output latches.
+   * Otherwise a released EEPROM SDA always reads 1 and every ACK is missed.
+   * Stock startup also sets this bit. Preserve the other ports' read modes. */
+  mcu_update(0xc0, 0x08, 0x08);
+
   board_backlight_power(1);
 }
 

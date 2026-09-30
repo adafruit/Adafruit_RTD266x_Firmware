@@ -6,7 +6,7 @@
 
 #define STORE_PAYLOAD_MAX 21
 #define STORE_SLOT_SIZE 32u
-#define STORE_ADDRESS 0x07c0u
+#define STORE_ADDRESS 0x04c0u
 
 enum { STORE_UNAVAILABLE, STORE_EMPTY, STORE_LOADED, STORE_ERROR };
 
@@ -23,6 +23,8 @@ uint16_t board_eeprom_diagnostic(void);
  * changes before saving. An unknown occupied reservation is never overwritten.
  * Each save preserves the previous slot until the new CRC and commit byte pass
  * readback. Both operations are bounded; failures leave runtime settings alone.
+ * Save snapshots the payload and services DDC between completed EEPROM bus
+ * transactions. Call load/save only from the foreground, never DDC callbacks.
  */
 uint8_t store_load(uint8_t *values, uint8_t count);
 uint8_t store_save(const uint8_t *values, uint8_t count);

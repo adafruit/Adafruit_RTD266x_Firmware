@@ -193,23 +193,30 @@ plane order were checked on the UC-586, followed by return to input video.
 
 ## Runtime settings
 
-Settings are held in RAM for the current session; no settings are written to
-the retained vendor flash tail. A two-record EEPROM implementation is now
-host-tested, including interrupted-save recovery and restore before the splash,
-but `SETTINGS=0` remains the default: the chip has not acknowledged reads on
-the stock code's P6.6/P6.7 pair. No EEPROM writes have been attempted. See the
+Settings persist by default (`SETTINGS=1`) in two 32-byte records in the
+UC-586's separate EEPROM at `0x4C0..0x4FF`; `SETTINGS=0` makes preferences
+session-only. The retained vendor flash tail is not written. Two matching
+complete EEPROM backups preceded the first write. Setting `FFC0` bit 3 fixed
+physical P6 input readback on the stock code's P6.6/P6.7 I2C pair. Hardware
+saves and restoration of ten changed preferences passed a whole-chip reset
+with application XRAM cleared; physical power-disconnect testing remains
+pending. Cooperative saves service DDC between completed bus transactions,
+preserving a snapshot while later changes queue for another save. The release
+passed rapid DDC reads and continuous audio during saving; a newer menu volume
+change during a save also restored after reset. See the
 [storage qualification and diagnostic interface](ddcci.md#settings-storage).
 
 | Setting | Choices | Default |
 | --- | --- | --- |
-| Startup Splash | Off / On, on soft-power resume | Build-time `SPLASH` value |
+| Startup Splash | Off / On, at startup and soft-power resume | Build-time `SPLASH` value until a preference is saved |
 | Connection Popup | Off / On | On |
 | Menu Timeout | Never / 5 / 10 / 20 seconds | 10 seconds |
 | No Signal Background | Black / Blue / Test bitmap | Test bitmap |
 | No Signal Sleep After | Never / 1 / 2 / 5 / 10 / 20 seconds | Never |
 
-Cold boot follows the build-time `SPLASH` option. The runtime splash setting
-controls resume after soft power off/on (`D6=4`, then `D6=1`). No-signal timeout
+Saved preferences restore before the startup splash. With `SETTINGS=0`, reset
+restores the build-time `SPLASH` default. The same runtime setting controls
+resume after soft power off/on (`D6=4`, then `D6=1`). No-signal timeout
 requests backlight power off, keeps monitoring input and requests power on after
 valid video is acquired. An open menu postpones sleep and requests its backlight
 on. The P6.4 gate visibly switched the backlight off on expiry and restored it
@@ -227,6 +234,7 @@ precisely time the delay from initial loss. `Never` disables automatic sleep.
 | Video brightness | Per-channel RGB additive coefficients, separate from backlight power | Live 0–100 control; setting 75 visibly lifted black to gray, then restored to neutral 50 |
 | Video contrast | Per-channel RGB multiplicative coefficients | Live 0–100 control; setting 25 visibly darkened the picture, then restored to neutral 50 |
 | Audio volume | HDMI manual digital gain before I2S | Live 0–100 amplitude control; 50% and 25% measured approximately -6 dB and -12 dB relative to 100% |
+| Persistent preferences | Separate 24LC16B EEPROM, two records with CRC and commit-last marker | Enabled by default; ten changed preferences restored after whole-chip reset; physical power-disconnect test pending |
 | Backlight level | Six 12-bit PWM channels and multiplexed output pins | Disabled; PWM1 requests at 100/25/0% produced unchanged brightness in three camera captures; VCP `10` unsupported and omitted from capabilities |
 | Backlight power | Stock button toggles P6.4/pin 54 through `0xFFCB` bit 0 | Physical off/on and no-signal sleep/wake verified; level dimming remains unavailable |
 | One or five buttons | GPIO and ADC key-sensing inputs are available | Stock UC-586 main polls pin 53 and toggles pin 54; ADC ladder code is also present but not evidence of connected keys |
@@ -243,27 +251,36 @@ documents SYS1 through SYS4 modes including mirroring and 180-degree rotation.
 That evidence establishes the shipped behavior; it does not identify how every
 RTD2660H board implements it.
 
-A concrete mechanism to investigate is panel scan-direction control. The
+A concrete mechanism is panel scan-direction control. The
 [ORTD2662 board profile](https://github.com/KerJoe/ORTD2662/blob/master/config/board_config.h)
 assigns vertical mirroring to RTD pin 98 and horizontal mirroring to pin 99;
 its [initialization](https://github.com/KerJoe/ORTD2662/blob/master/core/main.c)
-configures these as GPIO outputs. This is behavioral reference, not code used
-by this project. In the RTD manual these pins are P5.4 and P5.5: pin 98 uses
-`0xff9f[7:6]` for pin selection and `0xffc3` for its GPIO value; pin 99 uses
-`0xff9d[5:3]` and `0xffc4`. These addresses make useful Ghidra cross-reference
-targets when analyzing a stock firmware with the SYS1-SYS4 menu.
+configures these as GPIO outputs. The local vendor reference's `SetPanelLR`
+and `SetPanelUD` functions likewise change board-defined GPIO values, and its
+TCON menu cycles four scan-direction combinations when enabled for the panel.
+These are behavioral references, not code used by this project.
+
+| Reference board | Horizontal / vertical scan outputs | GPIO value registers | Pin-selection fields |
+| --- | --- | --- | --- |
+| ORTD2662 | Pin 99/P5.5 / pin 98/P5.4 | `0xffc4` / `0xffc3` | `0xff9d[5:3]` / `0xff9f[7:6]` |
+| Vendor CF_V266B, CF_TC2660, CF_TC266A | Pin 121/P7.3 / pin 122/P7.2 | `0xffd2` / `0xffd1` | `0xffa4[1:0]` / `0xffa4[3:2]` |
+| Vendor PCB800099, CF_TV2661X | Pin 103/P7.5 / pin 104/P7.4 | `0xffd4` / `0xffd3` | `0xffa0[6:4]` / `0xffa0[3:1]` |
 
 For the UC-586, first establish whether equivalent signals reach its actual
-panel or adapter. The KD50G21-40NT-A1 reference panel pinout does not expose
-scan-direction controls on its 40-pin connector; the exact attached panel
-and controller wiring still need identification. Thus this firmware currently
-has no flip/rotation control, while support on a suitably wired board remains
-an intended extension. Reversing both panel scan directions could provide a
-180-degree mode without buffering a full frame; this is a mechanism hypothesis
-for the shipped SYS modes, not a completed UC-586 measurement.
-The UC-586 stock mux values (`FF9F=1C`, `FF9D=1B`) also differ from the cited
-ORTD GPIO configuration. No panel-direction GPIO writes are enabled merely
-because another board uses the same scaler.
+panel or adapter. The [KD50G21-40NT-A1 reference panel pinout](https://cdn-shop.adafruit.com/datasheets/KD50G21-40NT-A1.pdf)
+does not expose scan-direction controls on its 40-pin connector; the exact attached panel
+and controller wiring still need identification. The UC-586 stock mux values
+(`FF9F=1C`, `FF9D=1B`, `FFA0=32`, `FFA4=00`) do not configure any of these
+pairs as two scan-direction outputs. No UC-586 flip/rotation path is qualified,
+so this firmware does not write those pins. Reversing both panel scan
+directions could provide 180-degree rotation on a suitably wired panel;
+qualification requires its actual pinout, connections and signal polarities.
+
+No applicable 90/270-degree full-video rotation path has been established.
+LCDWIKI's [HDMI display-direction instructions](https://www.lcdwiki.com/res/Show_Direction_and_Touch/How_to_change_display_direction-HDMI-Capacitive_Touch-V1.2.pdf)
+use Raspberry Pi `display_rotate` settings for rotation and flipping. That
+changes the source output and does not establish rotation inside the MPI5001's
+RTD scaler. OSD rotation and LVDS lane reversal are separate controls.
 
 ## Interface boundaries for later firmware
 
@@ -281,8 +298,9 @@ because another board uses the same scaler.
   API and menu. The former modifies pixel values; the latter controls light.
 - Keep menu state and settings independent of the OSD renderer. This lets a
   serial/debug interface exercise settings before physical keys are decoded.
-- Store user settings only after a confirmed edit, with a defined flash region
-  and erase policy. The existing flash tail is not free scratch storage.
+- Coalesce preference changes into the qualified EEPROM reservation, preserving
+  the previous complete record until readback confirms the new one. The existing
+  flash tail is not free scratch storage.
 
 ## Register references
 
@@ -346,9 +364,16 @@ support or rotation in that particular image has not been established.
 
 That candidate is 121,280 bytes, SHA256
 `f2f9151a782c2e9ec71f75086ee884d6cb3696402b6c9562f3dae2699360f749`.
-It begins with a `HAOYU Electronics RTD2660` container header rather than an
-8051 reset vector. It must not be treated as a raw flash image. Its payload
-format has not been decoded here.
+It begins with a 512-byte `HAOYU Electronics RTD2660` container header followed
+by a 120,768-byte encoded body. The big-endian length at offset `0x20` is
+120,748. Comparing the RGB and LVDS 1024x600 updates finds only one changed
+header byte and two changed, aligned 16-byte body blocks (file offsets
+`0x1160` and `0x11160`).
+Hundreds of repeated 16-byte blocks and changes confined to whole blocks
+suggest ECB-style block encryption; the algorithm and key remain unconfirmed.
+The payload has not been decoded and must not be treated as raw flash or
+disassembled as executable 8051 code. A raw Haoyue scaler flash dump, or the
+USB updater's decoder, is needed before identifying its register writes.
 
 An existing Ghidra analysis of the UC-586 original bank zero includes 769
 functions and an instruction listing. Bank one is retained as raw data; the

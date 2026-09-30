@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef RTD_SETTINGS
-#define RTD_SETTINGS 0
+#define RTD_SETTINGS 1
 #endif
 #ifndef RTD_EEPROM_DIAGNOSTICS
 #define RTD_EEPROM_DIAGNOSTICS 0

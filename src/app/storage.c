@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: MIT
 #include "rtd/storage.h"
+#include "rtd/ddcci.h"
 #include <string.h>
 
-/* Two records in the proposed final 64 EEPROM bytes. Qualify and back up
+/* Two records in 64 EEPROM bytes at 0x4c0. Qualify and back up
  * this reservation before enabling RTD_SETTINGS on a physical board.
  * 0..3 magic, 4 schema version, 5 payload length, 6..7 sequence (little endian),
  * 8..28 payload/zero padding, 29..30 CRC-16/CCITT-FALSE, 31 commit marker.
  * A new record is invalidated first, then written, then committed last.
  */
 static uint8_t record[STORE_SLOT_SIZE];
+static uint8_t snapshot[STORE_PAYLOAD_MAX];
 static uint8_t state, current_slot, writable, loaded_count;
 static uint16_t sequence;
+
+/* Keep each save transaction short enough to return to DDC frequently. */
+#define SAVE_CHUNK 4u
 
 static uint16_t crc16(void) {
   uint16_t crc = 0xffff;
@@ -45,6 +50,18 @@ static uint8_t valid(uint8_t count) {
 }
 
 uint8_t store_status(void) { return state; }
+
+/* Only saves yield. Boot loading happens before the DDC endpoint is ready.
+ * The board call has issued STOP before a callback can read this same EEPROM.
+ */
+static uint8_t read_during_save(uint16_t address) {
+  uint8_t i;
+  for (i = 0; i < STORE_SLOT_SIZE; i += SAVE_CHUNK) {
+    if (!board_eeprom_read(address + i, record + i, SAVE_CHUNK)) return 0;
+    ddcci_service();
+  }
+  return 1;
+}
 
 uint8_t store_load(uint8_t *values, uint8_t count) {
   uint8_t slot, found = 0, foreign_schema = 0;
@@ -96,44 +113,57 @@ uint8_t store_load(uint8_t *values, uint8_t count) {
 }
 
 uint8_t store_save(const uint8_t *values, uint8_t count) {
-  uint8_t next = current_slot ^ 1, i, marker = 0, equal, check[8];
+  uint8_t next = current_slot ^ 1, i, marker = 0, check[SAVE_CHUNK];
   uint16_t address = STORE_ADDRESS + next * STORE_SLOT_SIZE, crc;
   if (!writable || !count || count != loaded_count || count > STORE_PAYLOAD_MAX) {
     state = STORE_ERROR;
     return 0;
   }
+  /* A DDC command can change the caller's settings at any yield. Commit this
+   * snapshot, leaving the application to queue those newer changes. */
+  memcpy(snapshot, values, count);
   /* Suppress writes even when a caller reports an unchanged preference. */
   if (state == STORE_LOADED &&
-      board_eeprom_read(STORE_ADDRESS + current_slot * STORE_SLOT_SIZE,
-                         record, STORE_SLOT_SIZE) && valid(count) &&
-      !memcmp(values, record + 8, count))
+      read_during_save(STORE_ADDRESS + current_slot * STORE_SLOT_SIZE) &&
+      valid(count) && !memcmp(snapshot, record + 8, count))
     return 1;
+  ddcci_service();
   memset(record, 0, sizeof record);
   record[0] = 'A'; record[1] = 'R'; record[2] = 'T'; record[3] = 'D';
   record[4] = 1;
   record[5] = count;
   record[6] = (uint8_t)(sequence + 1);
   record[7] = (uint8_t)((sequence + 1) >> 8);
-  memcpy(record + 8, values, count);
+  memcpy(record + 8, snapshot, count);
   crc = crc16();
   record[29] = (uint8_t)crc;
   record[30] = (uint8_t)(crc >> 8);
-  if (!board_eeprom_write_page(address + 31, &marker, 1) ||
-      !board_eeprom_write_page(address, record, 16) ||
-      !board_eeprom_write_page(address + 16, record + 16, 16))
-    goto failed;
+  /* Separate CRC preparation from the next bus transaction's latency. */
+  ddcci_service();
+  if (!board_eeprom_write_page(address + 31, &marker, 1)) goto failed;
+  ddcci_service();
+  for (i = 0; i < STORE_SLOT_SIZE; i += SAVE_CHUNK) {
+    /* Establish schema/count before magic, so a torn initially blank slot
+     * cannot masquerade as an owned record with an unknown newer schema. */
+    uint8_t offset = i < 8 ? i ^ 4 : i;
+    if (!board_eeprom_write_page(address + offset, record + offset, SAVE_CHUNK))
+      goto failed;
+    ddcci_service();
+  }
   /* Validate the body before the final commit, using small stack storage. */
   for (i = 0; i < STORE_SLOT_SIZE; i += sizeof check) {
     if (!board_eeprom_read(address + i, check, sizeof check) ||
         memcmp(check, record + i, sizeof check))
       goto failed;
+    ddcci_service();
   }
   marker = 0xa5;
-  if (!board_eeprom_write_page(address + 31, &marker, 1) ||
-      !board_eeprom_read(address, record, STORE_SLOT_SIZE))
-    goto failed;
-  equal = valid(count) && !memcmp(values, record + 8, count);
-  if (!equal)
+  if (!board_eeprom_write_page(address + 31, &marker, 1)) goto failed;
+  ddcci_service();
+  if (!read_during_save(address) || !valid(count) ||
+      ((uint16_t)record[6] | ((uint16_t)record[7] << 8)) !=
+          (uint16_t)(sequence + 1) ||
+      memcmp(snapshot, record + 8, count))
     goto failed;
   sequence = (uint16_t)record[6] | ((uint16_t)record[7] << 8);
   current_slot = next;

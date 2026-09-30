@@ -32,6 +32,7 @@ int main(void) {
   assert(P1 == 0x7f && P3_3 == 0 && P3_5 == 0 && P3_4 == 1 && P3_6 == 1);
   assert(registers[0x9c] == 0xa4); /* Existing pin54 push-pull mux. */
   assert(registers[0xa0] == 0x32); /* Other stock pin selections stay intact. */
+  assert(registers[0xc0] == 0xad); /* P6 samples pins; other read modes retained. */
   assert(registers[0xcb] == 0xa5); /* Default on, preserving all other bits. */
   assert(registers[0x3a] == 0xa5 && registers[0x3b] == 0xa5);
   for (value = 0x46; value <= 0x4c; ++value)
@@ -49,6 +50,12 @@ int main(void) {
     assert(board_backlight_power(1));
     assert(registers[0xcb] == (value | 1));
     assert(writes == before + 2 && last_reg == 0xcb);
+  }
+  for (value = 0; value <= 255; ++value) {
+    registers[0xc0] = (uint8_t)value;
+    board_init();
+    assert(registers[0xc0] == (value | 0x08));
+    assert(registers[0x9a] == 0x05); /* EEPROM SCL/SDA remain open drain. */
   }
   puts("UC586 gate bit preservation, default on and unsupported brightness passed");
   return 0;
