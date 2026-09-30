@@ -13,6 +13,7 @@
 #define OSD_CODE
 #include "splash_bitmap.h"
 #include "no_signal_bitmap.h"
+#define MENU_FONT_REFERENCE
 #include "rtd/menu_font.h"
 #include "rtd/menu_icons.h"
 
@@ -41,6 +42,7 @@ static uint8_t font_snapshot[FONT_COUNT * FONT_WORDS][3];
 static unsigned font_cached, font_seen;
 static unsigned writes_since_poll, ddcci_polls, upload_polls;
 static const char *preview_path;
+static unsigned style_x = 50, style_y = 50, style_alpha;
 
 uint16_t video_display_vstart(void) {
   return runtime_vstart;
@@ -102,6 +104,32 @@ void ddcci_service(void) {
   assert(address == saved_address && lane == 0);
 }
 
+static void check_origin_change(unsigned offset_y, unsigned zoom) {
+  static const uint16_t starts[] = {6, 32, 10};
+  unsigned pass, word, lane_index;
+  uint16_t saved_vstart = runtime_vstart;
+  uint8_t saved_style[3];
+  uint8_t saved_alpha = regs[0x6c] & 0x1c;
+  unsigned saved_x = ((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6);
+  memcpy(saved_style, frame[3], sizeof saved_style);
+  for (pass = 0; pass <= sizeof starts / sizeof starts[0]; ++pass) {
+    unsigned y_delay;
+    runtime_vstart = pass < sizeof starts / sizeof starts[0] ? starts[pass] : saved_vstart;
+    memset(written, 0, sizeof written);
+    palette_bytes = 0;
+    osd_service();
+    y_delay = ((unsigned)frame[0][0] << 3) | ((frame[0][2] >> 3) & 7);
+    assert(y_delay * zoom - runtime_vstart == offset_y);
+    assert((((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6)) == saved_x);
+    assert(!memcmp(saved_style, frame[3], sizeof saved_style));
+    assert((regs[0x6c] & 0x1c) == saved_alpha && (regs[0x6c] & 1));
+    assert(palette_bytes == 0 && !writes_since_poll);
+    for (word = 0; word < 4096; ++word)
+      for (lane_index = 0; lane_index < 3; ++lane_index)
+        assert(!written[word][lane_index]); /* Position only, never upload. */
+  }
+}
+
 static void check_asset(void (*show)(void), const char *name,
                         unsigned bitmap_width, unsigned bitmap_height,
                         unsigned bpp, unsigned colors,
@@ -128,6 +156,7 @@ static void check_asset(void (*show)(void), const char *name,
   font_cached = 0; /* Bitmap tiles replace text-font SRAM. */
   assert((regs[0x6c] & 1) && (frame[0][2] & 1));
   assert(frame[3][1] == 3);
+  assert(!(regs[0x6c] & 0x1c)); /* Menu transparency never changes assets. */
   assert(palette_bytes == colors * 3);
   for (row = 0; row < colors; ++row) {
     for (column = 0; column < 3; ++column) {
@@ -208,6 +237,7 @@ static void check_asset(void (*show)(void), const char *name,
          (x_delay * 8 + BOARD_OSD_X_CORRECTION) < 8);
   assert(y_delay * 2 <= runtime_vstart + (panel.height - height * 4) / 2);
   assert(runtime_vstart + (panel.height - height * 4) / 2 - y_delay * 2 < 2);
+  check_origin_change((panel.height - height * 4) / 2, 2);
 
   printf("OSD %s %u-bpp bitmap, palette, padding, layout and position passed "
          "(%u differing scanline comparisons)\n", name, bpp, differing_pairs);
@@ -310,6 +340,7 @@ static void check_input(const video_signal_t *signal,
   osd_show_input(signal);
   assert((regs[0x6c] & 1) && (frame[0][2] & 1));
   assert(frame[3][1] == 3);
+  assert(!(regs[0x6c] & 0x1c)); /* Input diagnostics remain opaque. */
   assert(frame[4][0] == 0x10 && frame[4][1] == 0 && frame[4][2] == 0x18);
   assert(palette_bytes >= 9 && !(regs[0x6e] & 0x80));
   for (column = 0; column < 3; ++column) {
@@ -336,6 +367,7 @@ static void check_input(const video_signal_t *signal,
   y_delay = ((unsigned)frame[0][0] << 3) | ((frame[0][2] >> 3) & 7);
   assert(x_delay == (panel.hstart + 16u - BOARD_OSD_X_CORRECTION) / 8u);
   assert(y_delay == (runtime_vstart + 16u) / 2u);
+  check_origin_change(16, 2);
 }
 
 static void check_input_messages(void) {
@@ -444,6 +476,7 @@ static void check_menu_preview(void) {
       check_text_writes(7);
       assert((regs[0x6c] & 1) && (frame[0][2] & 1));
       assert(palette_bytes >= 48 && frame[3][1] == 3);
+      assert(!(regs[0x6c] & 0x1c));
       assert(0x10 + 7 * 30 <= FONT_BASE); /* Map cannot overwrite glyphs. */
       for (row = 0; row < 7; ++row) {
         assert(sram[row][0] == 0x80 && sram[row][1] == 0x88);
@@ -548,11 +581,17 @@ static void check_live_frame(char text[12][31]) {
   unsigned row, column;
   unsigned x_delay = ((unsigned)frame[0][1] << 2) | (frame[0][2] >> 6);
   unsigned y_delay = ((unsigned)frame[0][0] << 3) | ((frame[0][2] >> 3) & 7);
+  unsigned x = x_delay * 4 + BOARD_OSD_X_CORRECTION - panel.hstart;
+  unsigned y = y_delay - runtime_vstart;
   check_text_writes(12);
-  assert((regs[0x6c] & 1) && (frame[0][2] & 1) && frame[3][1] == 0);
+  assert((regs[0x6c] & 1) && (frame[0][2] & 1));
+  assert(frame[3][0] == 0 && frame[3][1] == (style_alpha ? 0x0c : 0));
+  assert(((regs[0x6c] >> 2) & 7) == style_alpha);
   assert(palette_bytes >= 48 && !(regs[0x6e] & 0x80));
-  assert(x_delay * 4 + BOARD_OSD_X_CORRECTION - panel.hstart == 220);
-  assert(y_delay - runtime_vstart == 132);
+  assert(x <= panel.width - 360u && y <= panel.height - 216u);
+  assert(x <= (panel.width - 360u) * style_x / 100u);
+  assert((panel.width - 360u) * style_x / 100u - x < 4u);
+  assert(y == (panel.height - 216u) * style_y / 100u);
   for (row = 0; row < 12; ++row) {
     assert(sram[row][0] == 0x80 && sram[row][1] == 0x88 && sram[row][2] == 30);
     for (column = 0; column < 30; ++column) {
@@ -657,6 +696,58 @@ static void check_live_menu(void) {
   puts("OSD 2bpp fonts, four icon rails, focus, bounds, stale cells and font cache passed");
 }
 
+static void check_menu_style(void) {
+  static const uint8_t positions[] = {0, 1, 50, 99, 100, 255};
+  static const uint8_t levels[] = {0, 10, 25, 40, 60, 75, 90, 100, 255};
+  static const uint8_t alphas[] = {0, 1, 2, 3, 4, 5, 6, 7, 7};
+  unsigned position, level;
+  char text[12][31];
+  video_signal_t signal = {0};
+  for (position = 0; position < sizeof positions; ++position) {
+    for (level = 0; level < sizeof levels; ++level) {
+      uint8_t x = positions[position];
+      uint8_t y = positions[sizeof positions - position - 1];
+      style_x = x > 100 ? 100 : x;
+      style_y = y > 100 ? 100 : y;
+      style_alpha = alphas[level];
+      runtime_vstart = position & 1 ? 10 : 32;
+      osd_set_menu_style(x, y, levels[level]);
+      memset(written, 0, sizeof written);
+      palette_bytes = 0;
+      regs[0x6c] |= 0x20;
+      osd_menu_begin("Menu position", 3, 0);
+      osd_menu_row("Transparency", NULL, levels[level], 1, 1, 1);
+      osd_menu_end("Adjust +/-");
+      check_live_frame(text);
+      assert(regs[0x6c] & 0x20); /* Preserve the background access control. */
+    }
+  }
+  /* A diagnostic between menus clears alpha without changing the preference. */
+  osd_show_input(&signal);
+  assert(!(regs[0x6c] & 0x1c) && frame[3][1] == 3);
+  memset(written, 0, sizeof written);
+  palette_bytes = 0;
+  osd_menu_begin("Restored style", 3, 0);
+  osd_menu_end("Menu select");
+  check_live_frame(text);
+  /* A bottom-aligned open menu must remain fully visible when leaving the
+   * 16:9 raster (start6) for no signal (start32), and when reacquiring it. */
+  style_x = style_y = 100;
+  runtime_vstart = 6;
+  osd_set_menu_style(100, 100, 100);
+  memset(written, 0, sizeof written);
+  palette_bytes = 0;
+  osd_menu_begin("Bottom right", 3, 0);
+  osd_menu_end("Menu select");
+  check_live_frame(text);
+  check_origin_change(panel.height - 216u, 1);
+  style_x = style_y = 50;
+  style_alpha = 0;
+  runtime_vstart = 32;
+  osd_set_menu_style(50, 50, 0);
+  puts("OSD position endpoints, four-pixel steps, alpha levels and overlay isolation passed");
+}
+
 static void export_page_examples(void) {
   char text[12][31];
   if (!preview_path) return;
@@ -695,6 +786,7 @@ int main(int argc, char **argv) {
   check_menu_preview();
   check_input_messages();
   check_live_menu();
+  check_menu_style();
   export_page_examples();
   check_input_messages(); /* Live palette must restore white-on-black input text. */
   regs[0x6c] = 0x20; /* Hardware background transition cleared the port. */
@@ -705,6 +797,7 @@ int main(int argc, char **argv) {
               splash_palette, splash_bitmap);
   check_live_menu(); /* Bitmap invalidation forces exactly one new font upload. */
   osd_hide();
+  runtime_vstart = 6;
   osd_service(); /* An expired overlay must not be resurrected. */
   assert(!(regs[0x6c] & 1) && !(frame[0][2] & 1));
   assert(frame[3][0] == 0 && frame[3][1] == 0 && frame[3][2] == 0);

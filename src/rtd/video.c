@@ -37,6 +37,7 @@ enum {
   MEASURE_ACTIVE = 0x56,
   MEASURE_SELECT = 0x58,
   COLOR_CONTROL = 0x62,
+  COLOR_DATA = 0x63,
   PICTURE_ACCESS = 0x64,
   PICTURE_DATA = 0x65,
   GAMMA = 0x67,
@@ -96,7 +97,25 @@ static const VIDEO_CODE input_mode_t input_modes[] = {
 };
 static uint16_t display_vstart;
 static uint16_t picture_width;
-static uint8_t aspect_fill;
+static uint8_t aspect_mode;
+static uint8_t current_aspect;
+#if RTD_ASPECT_16_9
+static uint8_t picture_mode;
+static uint32_t picture_clock;
+#endif
+#if RTD_ASPECT_4_3 || RTD_ASPECT_16_9
+static uint8_t downscale_active;
+#endif
+static uint8_t picture_brightness, picture_contrast;
+static uint8_t color_gain[3];
+static uint8_t sharpness;
+static uint8_t requested_sharpness, sharpness_index;
+
+static void apply_aspect(void);
+
+static uint8_t percent_limit(uint8_t percent) {
+  return percent > 100 ? 100 : percent;
+}
 
 uint16_t video_display_vstart(void) {
   return display_vstart;
@@ -123,8 +142,8 @@ void video_service(void) {
 void video_set_picture(uint8_t brightness, uint8_t contrast) {
   uint8_t channel;
   uint8_t access = rtd_read(0, PICTURE_ACCESS);
-  if (brightness > 100) brightness = 100;
-  if (contrast > 100) contrast = 100;
+  picture_brightness = brightness = percent_limit(brightness);
+  picture_contrast = contrast = percent_limit(contrast);
   brightness = (uint8_t)(((uint16_t)brightness * 255u + 50u) / 100u);
   contrast = (uint8_t)(((uint16_t)contrast * 255u + 50u) / 100u);
   /* Manual pp60-62: Set A applies to the full picture without a highlight
@@ -134,10 +153,62 @@ void video_set_picture(uint8_t brightness, uint8_t contrast) {
   rtd_write(0, PICTURE_ACCESS, (access & 0x70) | 0x80);
   for (channel = 0; channel < 3; ++channel)
     rtd_write(0, PICTURE_DATA, brightness);
-  for (channel = 0; channel < 3; ++channel)
-    rtd_write(0, PICTURE_DATA, contrast);
+  for (channel = 0; channel < 3; ++channel) {
+    uint16_t gain = ((uint16_t)contrast * color_gain[channel] + 25u) / 50u;
+    rtd_write(0, PICTURE_DATA, gain > 255 ? 255 : (uint8_t)gain);
+  }
   rtd_write(0, PICTURE_ACCESS, access & 0x7f);
   rtd_update(0, COLOR_CONTROL, 3, 3);
+}
+
+void video_set_color(uint8_t red, uint8_t green, uint8_t blue,
+                     uint8_t saturation) {
+  uint8_t row, column;
+  uint8_t row_bytes[6];
+  int16_t change = (int16_t)percent_limit(saturation) - 50;
+  /* Manual pp60-61: the RGB matrix is I+C. These original Q8 coefficients
+   * mix toward BT.601 luma, with
+   * weights rounded to 77/256, 150/256, 29/256. Each row sums exactly to
+   * one, so saturation cannot tint or brighten a neutral grey ramp.
+   */
+  static const VIDEO_CODE uint8_t luma[3] = {77, 150, 29};
+  color_gain[0] = percent_limit(red);
+  color_gain[1] = percent_limit(green);
+  color_gain[2] = percent_limit(blue);
+  video_set_picture(picture_brightness, picture_contrast);
+
+  /* Keep the sRGB block running while writing its DVS-buffered coefficients.
+   * The reference transaction leaves the last RGB row selected when it sets
+   * ready. Preserve that established write context in the latch request.
+   */
+  /* The reference computes Q10 coefficients, halves them, then enables a
+   * one-bit enlargement. For our Q8 values select two-bit enlargement
+   * instead. Normal precision gave only partial desaturation on UC-586. */
+  rtd_update(0, PICTURE_ACCESS, 0x40, 0x40);
+  rtd_update(0, COLOR_CONTROL, 0xfc, 0x44);
+  for (row = 0; row < 3; ++row) {
+    rtd_update(0, COLOR_CONTROL, 0x38, (uint8_t)((row + 4) << 3));
+    rtd_write(0, COLOR_DATA, 0); /* No per-channel offsets. */
+  }
+  for (row = 0; row < 3; ++row) {
+    int16_t diagonal = 0;
+    for (column = 0; column < 3; ++column)
+      if (column != row) diagonal += change * luma[column] / 50;
+    for (column = 0; column < 3; ++column) {
+      int16_t coefficient = column == row ? diagonal :
+                            -(change * luma[column] / 50);
+      row_bytes[2 * column] = coefficient < 0 ? 1 : 0;
+      row_bytes[2 * column + 1] = (uint8_t)coefficient;
+    }
+    /* Match the established SRGB transaction: select a row, then stream
+     * all six bytes without intervening gateway page/address writes. */
+    rtd_update(0, COLOR_CONTROL, 0x38, (uint8_t)((row + 1) << 3));
+    rtd_write_bytes(0, COLOR_DATA, row_bytes, sizeof row_bytes);
+  }
+  /* CR62[7] latches all coefficients at DVS; preserve the blue-row write
+   * selector as in the established hardware transaction. */
+  rtd_update(0, COLOR_CONTROL, 0x80, 0x80);
+  if (!change) rtd_update(0, COLOR_CONTROL, 0x04, 0); /* Neutral bypass. */
 }
 
 static void timing_word(uint8_t index, uint16_t value) {
@@ -240,33 +311,124 @@ static void receiver_init(void) {
   rtd_indirect_update(2, HDMI_PORT, 0x30, 0x08, 0x08); /* Video output. */
 }
 
-static void linear_filter(void) {
-  uint8_t coefficient;
-  uint16_t weight;
-
-  /* A newly generated triangular kernel; no inherited filter table.
-   * 4 taps x 16 stored half-phases, mirrored to 32 phases by hardware.
-   * Phase/layout and unity=1024 are inferred, pending image-quality checks.
-   * p=(phase+0.5)/32 gives weights [0, 1024*p, 1024*(1-p), 0].
-   */
-  rtd_write(0, FILTER, 0x00);
-  rtd_write(0, FILTER, 0xcc); /* Write inactive bank 2, both color paths. */
-  for (coefficient = 0; coefficient < 64; ++coefficient) {
-    if (coefficient < 16 || coefficient >= 48)
-      weight = 0;
-    else if (coefficient < 32)
-      weight = 16U + 32U * (coefficient - 16U);
-    else
-      weight = 1008U - 32U * (coefficient - 32U);
-    rtd_write(0, FILTER_DATA, (uint8_t)weight);
-    rtd_write(0, FILTER_DATA, (uint8_t)(weight >> 8));
-  }
-  rtd_write(0, FILTER, 0x22); /* Horizontal bank 2; vertical stays bypassed. */
+void video_set_sharpness(uint8_t percent) {
+  requested_sharpness = percent_limit(percent);
+  sharpness_index = 0;
 }
+
+void video_controls_service(void) {
+  int16_t quarter, linear, left, right, center, weight, amount;
+  uint8_t control;
+  if (sharpness_index == 64) return;
+  if (!sharpness_index) {
+    control = rtd_read(0, FILTER) & 0x33;
+    /* Restart an interrupted upload in the still-inactive bank. */
+    rtd_write(0, FILTER, control);
+    rtd_write(0, FILTER, control | ((control & 0x22) ? 0 : 0x44) | 0x88);
+  }
+  amount = (int16_t)requested_sharpness - 50;
+  /* Convolve the original linear interpolation with [-a,1+2a,-a],
+   * where a=(sharpness-50)/200. This gives a mild low-pass at zero,
+   * the original linear filter at 50, and an unsharp mask at 100.
+   * Four taps x 16 stored half-phases; preserve DC exactly after rounding.
+   * UC-586 Fill-mode captures confirm a modest softening/sharpening effect;
+   * detailed filter response has not been characterized.
+   */
+  quarter = 4 + 8 * (sharpness_index & 15);
+  linear = quarter * 4;
+  /* Every slope is divisible by four. Divide it first so all products fit
+   * signed 16 bits and the 8051 avoids slow 32-bit divisions. */
+  left = -amount * quarter / 50;
+  right = -amount * (256 - quarter) / 50;
+  center = linear + amount * (3 * quarter - 256) / 50;
+  switch (sharpness_index >> 4) {
+  case 0: weight = left; break;
+  case 1: weight = center; break;
+  case 2: weight = 1024 - left - center - right; break;
+  default: weight = right; break;
+  }
+  rtd_write(0, FILTER_DATA, (uint8_t)weight);
+  rtd_write(0, FILTER_DATA, (uint8_t)((uint16_t)weight >> 8) & 15);
+  if (++sharpness_index != 64) return;
+  /* Manual p41 permits writing the inactive bank, then switching banks.
+   * Only horizontal filtering is used; the vertical path stays bypassed. */
+  control = rtd_read(0, FILTER);
+  rtd_write(0, FILTER, (control & 0x11) | ((control & 0x44) >> 1));
+  sharpness = requested_sharpness;
+  if (picture_width) apply_aspect();
+}
+
+#if RTD_ASPECT_4_3 || RTD_ASPECT_16_9
+static void downscale_filter_init(void) {
+  uint8_t coefficient;
+  /* Manual pp154-155: 32 stored coefficients, low byte first, with the
+   * remaining half supplied by symmetry. The established UZD ordering is
+   * four groups of eight half-phases and unity=1024. Generate an original
+   * linear kernel convolved with [1/8,3/4,1/8] for mild anti-alias filtering.
+   */
+  rtd_update(6, 0xe3, 0x13, 0); /* Disable before writing the selected table. */
+  rtd_write(6, 0xf3, 0); /* Coefficient table 1, index zero, no readback. */
+  for (coefficient = 0; coefficient < 32; ++coefficient) {
+    uint16_t linear = 32 + 64 * (coefficient & 7);
+    uint16_t weight;
+    switch (coefficient >> 3) {
+    case 0: weight = linear / 8; break;
+    case 1: weight = (5 * linear + 1024) / 8; break;
+    case 2: weight = (6144 - 5 * linear) / 8; break;
+    default: weight = (1024 - linear) / 8; break;
+    }
+    rtd_write(6, 0xf4, (uint8_t)weight);
+    rtd_write(6, 0xf4, (uint8_t)(weight >> 8));
+  }
+  rtd_write(6, 0xf3, 0);
+}
+
+static void downscale_window(uint16_t width, uint16_t height) {
+  uint8_t enable = (picture_width > width ? 1 : 0) | (height < 480 ? 2 : 0);
+  uint32_t factor = enable ?
+      (((uint32_t)picture_width << 20) + width - 1) / width : 0;
+  /* Manual pp150-154: RGB boundary values, no video compensation or
+   * extended buffer, and coefficient table 1 for both axes.
+   * Horizontal-only UZD is valid with the auxiliary line buffer bypassed;
+   * vertical UZD uses the H->V buffer mode.
+   */
+  rtd_update(6, 0xe3, 0xbf, 0x20);
+  rtd_update(6, 0xe4, 0x3c, enable & 2 ? 0x08 : 0); /* H->V for vertical UZD. */
+  if (!(enable & 1)) factor = 0;
+  rtd_write(6, 0xe5, (uint8_t)(factor >> 16));
+  rtd_write(6, 0xe6, (uint8_t)(factor >> 8));
+  rtd_write(6, 0xe7, (uint8_t)factor);
+  factor = enable & 2 ? ((uint32_t)480 << 20) / height : 0;
+  rtd_write(6, 0xe8, (uint8_t)(factor >> 16));
+  rtd_write(6, 0xe9, (uint8_t)(factor >> 8));
+  rtd_write(6, 0xea, (uint8_t)factor);
+  rtd_write(6, 0xeb, 0); /* Zero nonlinear delta and first segment. */
+  rtd_write(6, 0xec, 0);
+  rtd_update(6, 0xed, 7, 0);
+  rtd_write(6, 0xee, 0);
+  rtd_update(6, 0xef, 7, (uint8_t)(width >> 8));
+  rtd_write(6, 0xf0, (uint8_t)width);
+  /* Phase alignment follows the documented input/output factor and the
+   * observed UZD initialization convention, checked with the native grid. */
+  rtd_write(6, 0xf1, enable & 1 ?
+            (uint8_t)(255u - (uint32_t)picture_width * 255u / width) : 0);
+  rtd_write(6, 0xf2, enable & 2 ? (uint8_t)(255u - 480UL * 255u / height) : 0);
+  rtd_update(6, 0xe3, 3, enable);
+  downscale_active = enable;
+}
+#endif
 
 void video_init(void) {
   picture_width = 0;
-  aspect_fill = 0;
+  aspect_mode = VIDEO_ASPECT_KEEP;
+  current_aspect = VIDEO_ASPECT_KEEP;
+#if RTD_ASPECT_16_9
+  picture_mode = VIDEO_MODE_NONE;
+  picture_clock = 0;
+#endif
+#if RTD_ASPECT_4_3 || RTD_ASPECT_16_9
+  downscale_active = 0;
+#endif
   rtd_update(0, HOST, 0x01, 0x01);
   platform_delay_ms(20);
   rtd_update(0, HOST, 0x07, 0);
@@ -275,8 +437,16 @@ void video_init(void) {
   panel_timing(panel.vtotal, panel.vstart);
   rtd_write(0, GAMMA, 0);
   rtd_write(0, DITHER, 0);
+  color_gain[0] = color_gain[1] = color_gain[2] = 50;
   video_set_picture(50, 50);
-  linear_filter();
+  video_set_color(50, 50, 50, 50);
+  video_set_sharpness(50);
+  /* Startup has no DDC response deadline. Later requests upload one
+   * coefficient per service call, without an extra XRAM coefficient table. */
+  while (sharpness_index != 64) video_controls_service();
+#if RTD_ASPECT_4_3 || RTD_ASPECT_16_9
+  downscale_filter_init();
+#endif
   receiver_init();
 }
 
@@ -431,24 +601,122 @@ static void scale_factor(uint32_t factor) {
   rtd_write(0, SCALE_PORT + 1, (uint8_t)factor);
 }
 
+#if RTD_ASPECT_16_9
+static void aspect_vertical_timing(uint8_t wide) {
+  const VIDEO_CODE input_mode_t *mode = &input_modes[picture_mode - 1];
+  if (wide) {
+    uint32_t old_origin = ((uint32_t)mode->display_y * panel.htotal +
+                          panel.hstart) * mode->htotal / panel.htotal;
+    uint32_t new_origin = (21UL * panel.htotal + panel.hstart) *
+                          mode->htotal * 16 / ((uint32_t)panel.htotal * 15);
+    uint32_t delay = (uint32_t)mode->frame_lines * mode->htotal +
+                     ((uint16_t)mode->frame_clocks + 1) * 16;
+    uint16_t clocks;
+    output_clock(picture_clock * 15 / 16);
+    /* 525 input lines become 492.1875 output lines. The full 480-row panel
+     * raster fits inside the shorter porch qualified on UC-586. The DTG total is
+     * a watchdog ceiling; actual DVS remains input-frame synchronized.
+     */
+    panel_timing(493, 6);
+    /* Preserve the empirically aligned first-pixel lead, expressed in input
+     * clocks. Reference UZD timing targets 1.75 rather than 1.5 input lines,
+     * hence another quarter-line for the vertical filter pipeline.
+     */
+    delay += old_origin - new_origin + mode->htotal / 4;
+    clocks = (uint16_t)(delay % mode->htotal);
+    rtd_write(0, FRAME_LINES, (uint8_t)(delay / mode->htotal));
+    rtd_write(0, FRAME_CLOCKS, clocks >= 32 ? (uint8_t)(clocks / 16 - 1) : 0);
+  } else {
+    output_clock(picture_clock);
+    panel_timing(mode->vtotal, mode->display_y);
+    rtd_write(0, FRAME_LINES, mode->frame_lines);
+    rtd_write(0, FRAME_CLOCKS, mode->frame_clocks);
+  }
+}
+#endif
+
 static void apply_aspect(void) {
-  uint16_t width = aspect_fill ? panel.width : picture_width;
-  uint16_t left = panel.hstart - 10 + (panel.width - width) / 2;
-  uint8_t scale = width != picture_width;
-  /* Only the picture window changes; full-panel DE/background and both
-   * clock domains continue running. All admitted sources are 480 lines.
-   */
+  uint8_t actual = video_aspect_available(aspect_mode) ? aspect_mode : VIDEO_ASPECT_KEEP;
+  uint16_t width = actual == VIDEO_ASPECT_KEEP ? picture_width : panel.width;
+  uint16_t height = panel.height;
+  uint16_t fifo_width;
+  uint16_t left;
+  uint8_t scale;
+#if RTD_ASPECT_4_3 || RTD_ASPECT_16_9
+  uint8_t display = rtd_read(0, DISPLAY);
+  uint8_t blanked = 0;
+  uint8_t downscale;
+#endif
+#if RTD_ASPECT_4_3
+  if (actual == VIDEO_ASPECT_4_3) width = panel.height * 4u / 3u;
+  if (width > panel.width) width = panel.width;
+#endif
+#if RTD_ASPECT_16_9
+  if (actual == VIDEO_ASPECT_16_9) height = 450;
+  if ((actual == VIDEO_ASPECT_16_9) != (current_aspect == VIDEO_ASPECT_16_9)) {
+    rtd_update(0, DISPLAY, 0x28, 0x20);
+    aspect_vertical_timing(actual == VIDEO_ASPECT_16_9);
+    blanked = 1;
+  }
+#endif
+#if RTD_ASPECT_4_3 || RTD_ASPECT_16_9
+  downscale = (picture_width > width ? 1 : 0) | (height < 480 ? 2 : 0);
+  if (downscale != downscale_active) {
+    rtd_update(0, DISPLAY, 0x20, 0x20);
+    downscale_window(width, height);
+    blanked = 1;
+  }
+#endif
+  fifo_width = picture_width > width ? width : picture_width;
+  left = panel.hstart - 10 + (panel.width - width) / 2;
+  scale = width > picture_width;
+  /* Keep, Fill and 4:3 change only horizontal geometry. The 16:9
+   * mode has already installed its separate vertical timing above. */
   timing_word(0x05, left);
   timing_word(0x07, left + width);
+  timing_word(0x10, display_vstart + (panel.height - height) / 2);
+  timing_word(0x12, display_vstart + (panel.height + height) / 2);
+  rtd_indirect_write(0, FIFO_PORT, 0,
+      (uint8_t)(((fifo_width >> 8) << 4) | (height >> 8)));
+  rtd_indirect_write(0, FIFO_PORT, 1, (uint8_t)fifo_width);
+  rtd_indirect_write(0, FIFO_PORT, 2, (uint8_t)height);
   rtd_write(0, SCALE_PORT, 0x80);
   scale_factor(scale ? 0xccccdUL : 0xfffffUL); /* VGA 640 -> 800, or unity. */
   scale_factor(0xfffffUL);
   rtd_write(0, SCALE_PORT, 0);
-  rtd_update(0, SCALE, 0x13, 0x10 | scale);
+  rtd_update(0, SCALE, 0x13, 0x10 | (scale || sharpness != 50));
+#if RTD_ASPECT_4_3 || RTD_ASPECT_16_9
+  if (blanked) rtd_update(0, DISPLAY, 0x28, display & 0x28);
+#endif
+  current_aspect = actual;
 }
 
-void video_set_aspect(uint8_t fill) {
-  aspect_fill = fill != 0;
+uint8_t video_aspect_available(uint8_t mode) {
+  if (mode <= VIDEO_ASPECT_FILL) return 1;
+#if RTD_ASPECT_4_3
+  if (mode == VIDEO_ASPECT_4_3 && panel.width == 800 && panel.height == 480)
+    return 1;
+#endif
+#if RTD_ASPECT_16_9
+  if (mode == VIDEO_ASPECT_16_9 && panel.width == 800 && panel.height == 480 &&
+      (picture_mode == VIDEO_MODE_VGA || picture_mode == VIDEO_MODE_PANEL) &&
+      picture_clock * 15 / 16 >= 29500000UL)
+    return 1;
+#endif
+  return 0;
+}
+
+uint8_t video_aspect_current(void) { return current_aspect; }
+
+void video_set_aspect(uint8_t mode) {
+#if RTD_ASPECT_16_9
+  /* Retain a saved preference before acquisition and across incompatible
+   * sources; apply_aspect reports and applies Keep until it becomes usable. */
+  if (mode != VIDEO_ASPECT_16_9 && !video_aspect_available(mode)) return;
+#else
+  if (!video_aspect_available(mode)) return;
+#endif
+  aspect_mode = mode;
   if (picture_width) apply_aspect();
 }
 
@@ -479,27 +747,35 @@ uint8_t video_apply(const video_signal_t *signal) {
   rtd_update(0, CAPTURE_DELAY_HIGH, 0x03, 0);
   rtd_write(0, CAPTURE_HDELAY, 0);
   rtd_write(0, CAPTURE_VDELAY, 0);
-  rtd_indirect_write(0, FIFO_PORT, 0,
-      (uint8_t)(((signal->width >> 8) << 4) | (signal->height >> 8)));
-  rtd_indirect_write(0, FIFO_PORT, 1, (uint8_t)signal->width);
-  rtd_indirect_write(0, FIFO_PORT, 2, (uint8_t)signal->height);
 
   picture_width = signal->width;
-  apply_aspect();
+#if RTD_ASPECT_16_9
+  picture_mode = signal->mode;
+  picture_clock = signal->output_clock_hz;
+#endif
   rtd_update(0, FRAME_CONTROL, 0x02, 0);
   /* Empirical register codes from aligned grid tests, not a general timing
    * solver. The manual's CR41 formula and earlier clock labels disagree.
    */
   rtd_write(0, FRAME_LINES, mode->frame_lines);
   rtd_write(0, FRAME_CLOCKS, mode->frame_clocks);
+  apply_aspect();
+#if !RTD_ASPECT_4_3 && !RTD_ASPECT_16_9
   rtd_update(6, 0xe3, 0x13, 0); /* Downscaler and extended buffer off. */
   rtd_update(6, 0xe4, 0x0c, 0); /* Downscaler buffer bypass. */
+#endif
   video_blank(0);
   return 1;
 }
 
 void video_blank(uint8_t blank) {
-  if (blank) picture_width = 0;
+  if (blank) {
+    picture_width = 0;
+    current_aspect = VIDEO_ASPECT_KEEP;
+#if RTD_ASPECT_16_9
+    picture_mode = VIDEO_MODE_NONE;
+#endif
+  }
   /* CR28[3]=0 free-runs the panel; bit5 selects its full-screen background.
    * Once capture is configured, select frame sync and incoming video together.
    */

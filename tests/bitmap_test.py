@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Exercise the public BMP conversion command with real image files."""
 import os
+import importlib.util
 from pathlib import Path
 import re
 import struct
@@ -13,6 +14,30 @@ import unittest
 from PIL import Image
 
 CONVERTER = Path(__file__).resolve().parents[1] / "tools" / "bmp_to_header.py"
+SPEC = importlib.util.spec_from_file_location("bmp_to_header", CONVERTER)
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+
+
+def unpack_tiles(packed):
+    """Independent packet reader; reject incomplete literal/repeat packets."""
+    data = bytearray()
+    offset = 0
+    while offset < len(packed):
+        control = packed[offset]
+        offset += 1
+        length = (control & 127) + 1
+        if control & 128:
+            if offset == len(packed):
+                raise ValueError("Missing repeated value")
+            data.extend([packed[offset]] * length)
+            offset += 1
+        else:
+            if offset + length > len(packed):
+                raise ValueError("Truncated literal packet")
+            data.extend(packed[offset:offset + length])
+            offset += length
+    return data
 
 
 class BitmapTest(unittest.TestCase):
@@ -81,7 +106,28 @@ class BitmapTest(unittest.TestCase):
         self.assertIsNotNone(match, header)
         self.assertRegex(header, r"#ifndef __SDCC_mcs51\s+/\*[^*]*\*/\s+"
                                  r"static const OSD_CODE uint8_t splash_bitmap")
-        return bytes(int(value.strip(), 0) for value in match[1].split(",") if value.strip())
+        packed = bytes(int(value.strip(), 0) for value in match[1].split(",") if value.strip())
+        data = unpack_tiles(packed)
+        size = re.search(r"#define\s+SPLASH_TILE_BYTES\s+(\d+)", header)
+        self.assertIsNotNone(size)
+        self.assertEqual(len(data), int(size[1]))
+        return data
+
+    def test_lossless_packets_and_boundaries(self):
+        self.assertEqual(MODULE.pack_tiles(b""), b"")
+        self.assertEqual(MODULE.pack_tiles(b"\0" * 128), b"\xff\0")
+        self.assertEqual(MODULE.pack_tiles(b"\xff" * 256), b"\xff\xff\xff\xff")
+        self.assertEqual(MODULE.pack_tiles(b"abc"), b"\x02abc")
+        self.assertEqual(MODULE.pack_tiles(b"aabbbcc"), b"\x01aa\x82b\x01cc")
+        for data in (bytes(1), bytes(2), bytes(3), bytes(127), bytes(129),
+                     bytes(255), bytes(257), bytes(range(128)), bytes(range(256)),
+                     bytes(range(127)) + b"\xfe" * 129 + bytes(range(129)),
+                     bytes((i * 71 + i // 17) & 255 for i in range(9720))):
+            with self.subTest(size=len(data), prefix=data[:4]):
+                packed = MODULE.pack_tiles(data)
+                self.assertEqual(unpack_tiles(packed), data)
+                # Incompressible input has at most one tag per 128 bytes.
+                self.assertLessEqual(len(packed), len(data) + (len(data) + 127) // 128)
 
     def test_centered_color_tile_planes_and_byte_lanes(self):
         image = Image.new("RGB", (2, 2))

@@ -37,9 +37,19 @@ shows exact pixels enlarged 2× for inspection and the actual 12-pixel cell adva
 The live menu displays these cells at native 1× size.
 
 Define `MENU_FONT_CODE` as `__code` before including `rtd/menu_font.h` in SDCC
-firmware. It defaults to empty for host tools. The table occupies 5,130 bytes
-of code space and requires no RAM copy. No kerning table or proportional
-compositor is required.
+firmware. It defaults to empty for host tools. The 5,130 glyph bytes are stored
+as a 3,941-byte lossless zero-run stream: nonzero bytes are literals, and a zero
+byte followed by a count repeats zero that many times. Runs may cross glyph
+boundaries. Firmware expands directly into OSD SRAM without a RAM copy and
+still services DDC between complete 27-byte font planes. Glyph pixels, metrics
+and palette coverage are unchanged. No kerning table or proportional compositor
+is required.
+
+The generator checks that expanding its stream reproduces every original byte.
+Defining `MENU_FONT_REFERENCE` additionally exposes the uncompressed table for
+host tests; ordinary firmware excludes it. The OSD register tests compare all
+uploaded bytes with this independent reference and repeat after a bitmap has
+replaced the font in SRAM.
 
 `menu_icons.h` contains four original category icons (Picture, Audio, Display,
 Settings), under MIT. The converter draws them at 4× resolution and averages

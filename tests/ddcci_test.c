@@ -17,6 +17,10 @@ static uint32_t now;
 static unsigned gets, sets;
 static uint8_t last_code;
 static uint16_t last_value;
+static const uint8_t *queued_request;
+static uint8_t queued_count;
+
+static void host_write(const uint8_t *request, uint8_t count);
 
 uint8_t control_get(uint8_t code, uint16_t *maximum, uint16_t *value) {
   ++gets;
@@ -38,7 +42,14 @@ uint8_t control_set(uint8_t code, uint16_t value) {
   ++sets;
   last_code = code;
   last_value = value;
-  return code == 0xe0 && value <= 31;
+  if (queued_count) {
+    /* A second complete transaction arrives while a slow reset handler is
+     * still applying its settings, before the first service call returns. */
+    now += 201;
+    host_write(queued_request, queued_count);
+    queued_count = 0;
+  }
+  return (code == 0xe0 && value <= 31) || (code == 0x04 && value == 1);
 }
 
 uint8_t mcu_read(uint8_t reg) {
@@ -171,9 +182,9 @@ static void test_capabilities(void) {
   assert(strstr(assembled, "mccs_ver(2.2)"));
   assert(strstr(assembled, "8D D6 DF E0 E1 E2 E3 E4 E5 E6 E7 E8"));
 #if RTD_AUDIO_VOLUME
-  assert(strstr(assembled, "vcp(12 62 "));
+  assert(strstr(assembled, "vcp(04 12 16 18 1A 87 8A 62 "));
 #else
-  assert(strstr(assembled, "vcp(12 8D "));
+  assert(strstr(assembled, "vcp(04 12 16 18 1A 87 8A 8D "));
 #endif
   request[3] = request[4] = 0xff;
   checksum(request, sizeof request, 0x6e);
@@ -186,6 +197,7 @@ static void fixture(void) {
   registers[0x1e] = 3; /* Existing EDID and ISP settings must be preserved. */
   registers[0xec] = 0x4a;
   fifo_count = fifo_head = 0;
+  queued_count = 0;
   now = 0;
   ddcci_init();
   assert(registers[0x23] == 0x6f && registers[0x2b] == 2);
@@ -244,11 +256,33 @@ static void test_transport(void) {
   assert(gets == before && !fifo_count);
 }
 
+static void test_request_during_set(void) {
+  uint8_t reset[] = {0x51, 0x84, 3, 0x04, 0, 1, 0};
+  uint8_t get[] = {0x51, 0x82, 1, 0x12, 0};
+  unsigned before_gets = gets, before_sets = sets;
+  fixture();
+  checksum(reset, sizeof reset, 0x6e);
+  checksum(get, sizeof get, 0x6e);
+  queued_request = get;
+  queued_count = sizeof get;
+  host_write(reset, sizeof reset);
+  ddcci_service();
+  assert(sets == before_sets + 1 && last_code == 0x04 && last_value == 1);
+  assert(gets == before_gets && !queued_count && now == 201);
+  assert(fifo_count == sizeof get - 1 && (registers[0x27] & 0x10));
+  assert(!(registers[0x2a] & 0x20)); /* Set has no response; queued RX stays owned by host. */
+  ddcci_service();
+  assert(gets == before_gets + 1 && fifo_count == 11);
+  assert(fifo[3] == 0 && fifo[4] == 0x12 && fifo[9] == 73);
+  response_valid(fifo, fifo_count);
+}
+
 int main(void) {
   test_get_set();
   test_invalid();
   test_capabilities();
   test_transport();
-  puts("DDC-CI: framing, dispatch, checksums, capabilities and FIFO recovery pass");
+  test_request_during_set();
+  puts("DDC-CI: framing, dispatch, checksums, capabilities, queued reset read and FIFO recovery pass");
   return 0;
 }

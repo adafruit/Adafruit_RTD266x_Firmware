@@ -68,8 +68,9 @@ Menus and timing messages use a true monospaced Roboto Mono font in native
 12×18 antialiased cells, with lowercase, uppercase, digits and punctuation.
 The glyphs share one pen origin and baseline, preserving their designed side
 bearings. Their 2-bpp coverage maps to four palette colors. The live menu uses
-native 1× size, centered at 360×216 pixels; timing messages retain 2× zoom.
-Generated font and icon headers are checked in,
+native 1× size at 360×216 pixels, centered by default; timing messages retain
+2× zoom. The font uses lossless compression in firmware and expands directly
+into OSD SRAM with identical glyph pixels. Generated font and icon headers are checked in,
 so ordinary firmware builds do not need a font converter. To regenerate them
 and inspect a glyph sheet, run `python tools/font_to_header.py --preview
 build/menu-font.png` with the versions listed in the
@@ -114,15 +115,45 @@ The live menu has a left column of Picture, Audio, Display and Menu Settings
 icons, with the selected category's current settings shown alongside. Menu
 enters the settings pane; Back returns to the same category. Mixed-case text,
 outlined icons, a selection bar and percentage sliders use the antialiased
-font palette. Menu Settings includes a No Signal submenu.
+font palette. Menu Settings scrolls to reach No Signal, OSD Setup and System
+submenus. Menus are currently English only.
 The RP2350 tester sends menu/select, back, up, down and power
 events over DDC/CI while video runs. Physical button decoding remains pending.
 See the [control map and host commands](docs/ddcci.md).
 
 Image brightness and contrast adjust video pixels. LED backlight adjustment
 is disabled: PWM1 requests at 100%, 25% and 0% produced no visible brightness
-change in three camera captures. The live menu also controls volume, mute, aspect,
-connection popups, menu timeout and no-signal appearance/sleep. Changes save
+change in three camera captures. Picture includes RGB gains, saturation and
+horizontal sharpness, with 50% neutral for each. The live menu also controls
+volume, mute, aspect, startup splash, connection popups and menu timeout.
+Aspect offers Keep (default), Fill, forced 4:3 and forced 16:9. The forced
+ratios compress the complete picture without cropping: 4:3 uses a centered
+640x480 area, and 16:9 uses 800x450 with black bars above and below. Both passed
+640x480 and native 800x480 bench checks with 525-line source timings. The
+500-line CVT timing falls back to Keep for 16:9; its 4:3 path has host-test
+coverage only. `ASPECT_4_3=0` or `ASPECT_16_9=0` excludes a forced ratio from
+the build. The [register notes](docs/video-registers.md) describe these limits.
+Additional software controls are:
+
+- OSD Setup: horizontal/vertical position across the visible panel, with 50%
+  centered; horizontal movement uses four-pixel steps. Transparency changes
+  menu backgrounds across eight hardware levels. Its 0–100% slider spans
+  opaque through 7/8 video blending, while text remains opaque. Other overlays
+  retain their own position and opacity.
+- No Signal: black, blue or test-pattern background; backlight sleep after
+  1, 2, 5, 10, 20, 30, 40, 50 or 60 seconds, or Never.
+- System: an independent 1–120-minute sleep timer (0 is Off), factory reset
+  with a confirmation page, and a temporary burn-in color test. Burn-in cycles
+  red, green, blue, white and black every two seconds; the menu and DDC remain
+  usable to stop it. Power off or restart cancels the test.
+
+The added menu pages, position/transparency, reset, sleep timer and burn-in
+passed UC-586 camera and DDC checks. Expanded preferences restored after a
+whole-chip reset. Horizontal sharpness remains responsive during its background
+filter upload and showed a modest edge change; this is not a calibrated image
+quality measurement. See the [per-control bench record](docs/ddcci.md#transport-and-validation)
+for qualification and remaining limits.
+Changes save
 to the UC-586's EEPROM after two seconds and restore at startup, including
 the splash preference before anything is drawn. `make SETTINGS=0` disables
 saving and uses a separate `-volatile` build directory. No-signal sleep requests
@@ -140,8 +171,8 @@ EEPROM saving and restoration after whole-chip reset are bench-tested. The
 firmware preserves stock data and refuses an occupied, unrecognized save area.
 See [settings storage](docs/ddcci.md#settings-storage) for the reservation,
 backup procedure and power-loss behavior.
-Arbitrary video modes are not implemented. All six live pages, navigation, editing and
-setting readback passed the [DDC/CI bench checks](docs/ddcci.md#transport-and-validation),
+Arbitrary video modes are not implemented. The earlier six-page menu, navigation,
+editing and setting readback passed the [DDC/CI bench checks](docs/ddcci.md#transport-and-validation),
 including uninterrupted audio during menu drawing. Camera and audio checks also
 confirmed picture adjustments, Keep/Fill aspect, mute, soft power and no-signal
 backlight sleep/wake. Adjustable backlight dimming remains unavailable.
@@ -151,7 +182,9 @@ submenus after the splash. Each page shows three sample selections/values,
 including empty, half-full and full sliders. This opt-in artwork preview has
 no button actions and changes no settings. It is a renderer exercise separate
 from the live menu; normal builds proceed directly to video acquisition and
-open the live menu only when requested.
+open the live menu only when requested. The static preview renderer and its
+sample strings are excluded from normal firmware to preserve code space;
+host OSD tests explicitly enable them.
 
 ## Programming
 

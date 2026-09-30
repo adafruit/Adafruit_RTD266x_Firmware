@@ -35,11 +35,11 @@ enum {
 
 static const DDCCI_CODE char capabilities[] =
     "(prot(monitor)type(LCD)model(Adafruit_RTD266x)"
-    "cmds(01 03 F3)vcp(12 "
+    "cmds(01 03 F3)vcp(04 12 16 18 1A 87 8A "
 #if RTD_AUDIO_VOLUME
     "62 "
 #endif
-    "8D D6 DF E0 E1 E2 E3 E4 E5 E6 E7 E8 EB)"
+    "8D D6 DF E0 E1 E2 E3 E4 E5 E6 E7 E8 EB F0 F1 F2 F3 F4)"
     "mccs_ver(2.2))";
 
 static uint8_t packet[DDCCI_PACKET_BYTES];
@@ -79,7 +79,7 @@ uint8_t ddcci_packet(const uint8_t *request, uint8_t count, uint8_t *response) {
     response[2] = 0x02;
     response[3] = found ? 0 : 1;
     response[4] = code;
-    response[5] = 0; /* Set-parameter VCP, not a momentary value. */
+    response[5] = code == 0x04 ? 1 : 0; /* Factory reset is momentary. */
     response[6] = maximum >> 8;
     response[7] = (uint8_t)maximum;
     response[8] = value >> 8;
@@ -157,8 +157,11 @@ void ddcci_service(void) {
     receive_mode();
     return;
   }
-  reply = ddcci_packet(packet, count, packet);
+  /* Release the drained RX FIFO before a setter touches hardware. A new
+   * request can arrive during that work; resetting afterward would erase it.
+   * Setters must not recursively service DDC while packet is in use. */
   receive_mode();
+  reply = ddcci_packet(packet, count, packet);
   if (!reply)
     return;
   mcu_write(FIFO_CONTROL, FIFO_MCU | FIFO_RESET);

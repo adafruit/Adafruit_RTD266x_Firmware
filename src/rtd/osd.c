@@ -33,7 +33,7 @@
   _Static_assert((prefix##_BITMAP_BPP == 1 || prefix##_BITMAP_BPP == 4) && \
                  prefix##_PALETTE_COLORS >= 2 && prefix##_PALETTE_COLORS <= 16, \
                  "Unsupported bitmap color format"); \
-  _Static_assert(sizeof(name##_tiles) == ((prefix##_BITMAP_WIDTH + 11u) / 12u) * \
+  _Static_assert(prefix##_TILE_BYTES == ((prefix##_BITMAP_WIDTH + 11u) / 12u) * \
                  ((prefix##_BITMAP_HEIGHT + 17u) / 18u) * 27u * prefix##_BITMAP_BPP, \
                  "Bitmap dimensions do not match tile data")
 CHECK_BITMAP(SPLASH, splash);
@@ -41,6 +41,10 @@ CHECK_BITMAP(NO_SIGNAL, no_signal);
 
 static uint16_t active_width, active_height;
 static uint8_t visible, text_loaded;
+static uint8_t menu_x = 50, menu_y = 50, menu_blend;
+static uint16_t frame_vstart;
+/* Bit0: global double size; bit1: live menu; bit2: input diagnostic. */
+static uint8_t frame_mode;
 
 static void select_word(uint16_t address) {
   /* This layout stays in the documented SRAM words 0x000..0xEFF. */
@@ -58,7 +62,7 @@ static void write_word(uint16_t address, uint8_t a, uint8_t b, uint8_t c) {
   ddcci_service();
 }
 
-static void set_frame(uint8_t doubled) {
+static void set_frame(uint8_t mode) {
   /* Global zoom also scales both frame delays. Horizontal delay counts
    * groups of four pixels before zoom; vertical delay counts lines.
    * Center in the active raster, including blanking and the board's measured
@@ -66,8 +70,25 @@ static void set_frame(uint8_t doubled) {
    */
   uint16_t x = (panel.hstart + (panel.width - active_width) / 2 -
                 BOARD_OSD_X_CORRECTION) / 4;
-  uint16_t y = video_display_vstart() + (panel.height - active_height) / 2;
-  if (doubled) {
+  uint16_t y;
+  frame_mode = mode;
+  frame_vstart = video_display_vstart();
+  y = frame_vstart + (panel.height - active_height) / 2;
+  if (mode & 4) {
+    x = (panel.hstart + 16 - BOARD_OSD_X_CORRECTION) / 4;
+    y = frame_vstart + 16;
+  } else if (mode & 2) {
+    /* Interpolate between fully visible bounds in hardware delay units.
+     * Round the left bound inward; horizontal movement is four pixels.
+     * The current panel's available range times 100 fits in 16 bits.
+     */
+    uint16_t left = (panel.hstart - BOARD_OSD_X_CORRECTION + 3) / 4;
+    uint16_t right = (panel.hstart + panel.width - active_width -
+                       BOARD_OSD_X_CORRECTION) / 4;
+    x = left + (right - left) * menu_x / 100;
+    y = frame_vstart + (panel.height - active_height) * menu_y / 100;
+  }
+  if (mode & 1) {
     x /= 2;
     y /= 2;
   }
@@ -84,6 +105,10 @@ void osd_hide(void) {
 }
 
 void osd_service(void) {
+  /* Aspect changes and loss/reacquisition can move the output raster while
+   * a menu remains open. Reposition the existing map without an SRAM upload.
+   */
+  if (visible && frame_vstart != video_display_vstart()) set_frame(frame_mode);
   /* CR6C.0 is cleared by automatic background switching (manual p65).
    * Preserve the requested overlay across capture/frame-sync transitions.
    */
@@ -97,6 +122,7 @@ static void load_bitmap(uint8_t missing_input) {
   uint16_t tile_bytes;
   uint8_t columns, rows, map_mode, map_background, palette_count;
   uint8_t tile, row, color, channel, uploaded = 0;
+  uint8_t remaining = 0, repeat = 0, value = 0;
   uint16_t byte;
   text_loaded = 0;
 
@@ -108,7 +134,7 @@ static void load_bitmap(uint8_t missing_input) {
     palette_count = NO_SIGNAL_PALETTE_COLORS;
     tiles = no_signal_tiles;
     colors = &no_signal_palette[0][0];
-    tile_bytes = sizeof(no_signal_tiles);
+    tile_bytes = NO_SIGNAL_TILE_BYTES;
   } else {
     columns = (SPLASH_BITMAP_WIDTH + 11u) / 12u;
     rows = (SPLASH_BITMAP_HEIGHT + 17u) / 18u;
@@ -117,7 +143,7 @@ static void load_bitmap(uint8_t missing_input) {
     palette_count = SPLASH_PALETTE_COLORS;
     tiles = splash_tiles;
     colors = &splash_palette[0][0];
-    tile_bytes = sizeof(splash_tiles);
+    tile_bytes = SPLASH_TILE_BYTES;
   }
   active_width = columns * 48u;
   active_height = rows * 72u;
@@ -150,10 +176,18 @@ static void load_bitmap(uint8_t missing_input) {
   select_word(OSD_ALL_BYTES | OSD_SRAM | OSD_FONT_BASE);
   /* Build-time conversion provides complete planes, low palette bit first,
    * with each 24-bit SRAM word already in low/middle/high byte-lane order.
-   * Upload directly: the 8051 does no image decoding or per-pixel packing.
+   * Expand lossless run/literal packets straight into SRAM; no image buffer
+   * or per-pixel work. Packets may cross word/plane/tile boundaries.
    */
   for (byte = 0; byte < tile_bytes; ++byte) {
-    rtd_write(0, 0x92, tiles[byte]);
+    if (!remaining) {
+      value = *tiles++;
+      repeat = value & 0x80;
+      remaining = (value & 0x7f) + 1;
+      if (repeat) value = *tiles++;
+    }
+    rtd_write(0, 0x92, repeat ? value : *tiles++);
+    --remaining;
     if (++uploaded == 27) {
       uploaded = 0;
       ddcci_service(); /* Nine complete three-byte words per font plane. */
@@ -170,25 +204,30 @@ static void load_bitmap(uint8_t missing_input) {
   rtd_write(0, 0x6e, 0);
 }
 
-static void show_centered(uint8_t doubled) {
+static void show_frame(uint8_t doubled, uint8_t menu) {
   if (active_width > panel.width || active_height > panel.height) {
     return;
   }
   /* Bitmap rows add their own 2x scale; live text uses native-size rows. */
-  write_word(3, 0, doubled ? 0x03 : 0, 0);
-  set_frame(doubled);
+  /* Manual pp65/384: blend only character backgrounds, keeping text and
+   * outlines readable. 0 disables blending; 1..7 are eighths of video.
+   * All other overlays explicitly restore opaque rendering.
+   */
+  write_word(3, 0, (doubled ? 0x03 : 0) | (menu && menu_blend ? 0x0c : 0), 0);
+  rtd_update(0, 0x6c, 0x1c, menu ? menu_blend << 2 : 0);
+  set_frame(doubled | (menu << 1));
   visible = 1;
   rtd_update(0, 0x6c, 0x01, 0x01);
 }
 
 void osd_show_splash(void) {
   load_bitmap(0);
-  show_centered(1);
+  show_frame(1, 0);
 }
 
 void osd_show_no_signal(void) {
   load_bitmap(1);
-  show_centered(1);
+  show_frame(1, 0);
 }
 
 /* The font is rasterized from the bundled OFL Roboto Mono source.
@@ -363,7 +402,7 @@ static void text_geometry(const video_signal_t *signal) {
 }
 
 static void text_begin(uint8_t rows) {
-  uint8_t row, glyph, y, plane, byte;
+  uint8_t row, glyph, y, plane, byte, pixel, zeros = 0;
   uint16_t top, bottom;
   const OSD_CODE uint8_t *data;
   osd_hide();
@@ -379,11 +418,20 @@ static void text_begin(uint8_t rows) {
   write_word(OSD_SRAM | rows, 0, 0, 0);
   if (!text_loaded) {
     select_word(OSD_ALL_BYTES | OSD_SRAM | OSD_FONT_BASE);
+    data = menu_font_rle;
     for (glyph = 0; glyph < GLYPH_HORIZONTAL; ++glyph) {
-      if (glyph < MENU_FONT_COUNT) data = menu_font[glyph];
-      else data = menu_icons[(glyph - GLYPH_ICON) / 4][(glyph - GLYPH_ICON) % 4];
+      if (glyph >= MENU_FONT_COUNT)
+        data = menu_icons[(glyph - GLYPH_ICON) / 4][(glyph - GLYPH_ICON) % 4];
       for (byte = 0; byte < MENU_FONT_BYTES; ++byte) {
-        rtd_write(0, 0x92, data[byte]);
+        if (glyph >= MENU_FONT_COUNT) pixel = *data++;
+        else if (zeros) {
+          pixel = 0;
+          --zeros;
+        } else {
+          pixel = *data++;
+          if (!pixel) zeros = *data++ - 1;
+        }
+        rtd_write(0, 0x92, pixel);
         if (byte == 26 || byte == 53) ddcci_service();
       }
     }
@@ -408,8 +456,6 @@ static void text_begin(uint8_t rows) {
 }
 
 void osd_show_input(const video_signal_t *signal) {
-  uint16_t x = (panel.hstart + 16 - BOARD_OSD_X_CORRECTION) / 8;
-  uint16_t position_y = (video_display_vstart() + 16) / 2;
   if (!signal) {
     return;
   }
@@ -471,12 +517,12 @@ void osd_show_input(const video_signal_t *signal) {
     text_next_row();
   }
   write_word(3, 0, 3, 0);
-  write_word(0, (uint8_t)(position_y >> 3), (uint8_t)(x >> 2),
-             (uint8_t)(((x & 3) << 6) | ((position_y & 7) << 3) | 1));
+  set_frame(5);
   visible = 1;
   rtd_update(0, 0x6c, 1, 1);
 }
 
+#if RTD_MENU_PREVIEW
 static void preview_label(const char *label, uint8_t selected) {
   text_color = selected ? 0x13 : 0x12;
   text_put(' ');
@@ -586,7 +632,15 @@ void osd_show_menu_preview(uint8_t page, uint8_t variant) {
   }
   active_width = TEXT_COLUMNS * 24u;
   active_height = MENU_ROWS * 36u;
-  show_centered(1);
+  show_frame(1, 0);
+}
+#endif
+
+void osd_set_menu_style(uint8_t x, uint8_t y, uint8_t transparency) {
+  menu_x = x > 100 ? 100 : x;
+  menu_y = y > 100 ? 100 : y;
+  if (transparency > 100) transparency = 100;
+  menu_blend = ((uint16_t)transparency * 7 + 50) / 100;
 }
 
 static void menu_position(uint8_t row, uint8_t column) {
@@ -697,5 +751,5 @@ void osd_menu_end(const char *footer) {
   while (*footer && text_column < TEXT_COLUMNS - 1) text_put(*footer++);
   active_width = TEXT_COLUMNS * 12u;
   active_height = LIVE_MENU_ROWS * 18u;
-  show_centered(0);
+  show_frame(0, 1);
 }

@@ -3,8 +3,8 @@
 The firmware exposes its settings controller over DDC/CI at seven-bit I2C
 address `0x37`. The Feather RP2350 HSTX tester can send commands while video
 runs or while its video output is off, without ISP or a reset. Physical button
-sampling is not yet implemented. Live menu navigation, setting readback and
-DDC transactions during drawing have passed the bench checks below.
+sampling is not yet implemented. The earlier menu releases passed the live
+navigation, setting readback and DDC-during-drawing bench checks below.
 
 Use the shared CLI at
 `tools/tester/feather_rp2040/Feather_DVI_RTD_Tester/host.py` with an RP2350 tester:
@@ -26,7 +26,16 @@ Up/down select a category and preview its current settings in the right pane;
 Menu enters that pane. Up/down then select a row, and Menu enters/leaves its
 adjustment. Back leaves adjustment, returns to the same category icon, or
 closes the rail. Percentage adjustments step by five. Disabled rows do not
-enter edit mode. No Signal is a submenu of Menu Settings.
+enter edit mode. Picture contains a Color submenu; Menu Settings contains
+No Signal, OSD Setup and System. Back from a nested page returns to the row
+that opened it. Menu Settings has seven rows in a five-row viewport: selecting
+System or Back displays rows 2–6, and moving above System restores rows 0–4.
+The footer indicates that more rows are available.
+
+The added Color, OSD Setup, System and reset-confirmation pages passed controller
+host tests and the v40 bench navigation checks below. The v44 checks qualify
+saturation behavior and forced ratios with the native 800x480/525-line input.
+Menus are English-only; translated menus and font coverage are deferred.
 
 ## Control map
 
@@ -37,34 +46,73 @@ program flash.
 
 | VCP | Control | Accepted values / readback |
 | --- | --- | --- |
+| `04` | Factory reset | Write 1 restores defaults; reads 0, maximum 1 |
 | `12` | Image contrast | 0–100, neutral/default 50 |
+| `16`, `18`, `1A` | Red, green, blue gain | 0–100 each, neutral/default 50; combined with contrast |
 | `62` | Audio volume | 0–100 linear amplitude, default 100; zero mutes independently of `8D` |
+| `87` | Horizontal sharpness | 0–100, default 50; lower softens, higher sharpens |
+| `8A` | Color saturation | 0–100, neutral/default 50 |
 | `8D` | Audio mute | 1 mute, 2 unmute |
 | `D6` | Soft power | 1 on, 4 off |
 | `DF` | VCP version, read-only | `0x0202` |
 | `E0` | Virtual key event | 1 menu, 2 back, 4 up, 8 down, 16 power toggle; reads 0 |
 | `E1` | Menu state, read-only | `(page << 8) \| (selection << 1) \| editing` |
 | `E2` | Image brightness | 0–100, neutral/default 50 |
-| `E3` | Aspect | 0 Keep (default), 1 Fill |
+| `E3` | Aspect | 0 Keep (default), 1 Fill; 2 forced 4:3 with `ASPECT_4_3=1`; 3 forced 16:9 with `ASPECT_16_9=1` and compatible input |
 | `E4` | Startup Splash | 0 off, 1 on; default follows build-time `SPLASH`; saved value restores before startup display |
 | `E5` | Connection Popup | 0 off, 1 on (default) |
 | `E6` | No Signal Background | 0 black, 1 blue, 2 test bitmap (default) |
-| `E7` | No Signal Sleep After | 0 Never (default), 1=1s, 2=2s, 3=5s, 4=10s, 5=20s |
+| `E7` | No Signal Sleep After | 0 Never (default), 1=1s, 2=2s, 3=5s, 4=10s, 5=20s, 6=30s, 7=40s, 8=50s, 9=60s |
 | `E8` | Menu Timeout | 0 Never, 1=5s, 2=10s (default), 3=20s |
 | `EB` | Settings storage status, read-only | Low byte: 0 unavailable/disabled, 1 blank, 2 loaded/saved, 3 error; bit8 means a save is pending or in progress |
+| `F0`, `F1` | OSD horizontal, vertical position | 0–100 across the visible panel; default 50 centers the menu |
+| `F2` | OSD background transparency | 0–100; default 0 opaque, mapped to eight hardware blend levels |
+| `F3` | Sleep timer | 0 off (default), 1–120 minutes until soft power off |
+| `F4` | Burn-in color test | 0 off (default), 1 on; transient, never saved |
 
 The mute and power values follow [ddcutil's MCCS reference](https://www.ddcutil.com/vcpinfo_output/).
-`E0`–`EB` are project-specific. LED backlight (`10`) is unsupported and omitted
+`E0`–`EB` and `F0`–`F4` are project-specific. Reserved `F5` reads English=0
+with maximum 0, rejects writes and is omitted from the capabilities string.
+LED backlight (`10`) is unsupported and omitted
 from the capabilities string; its menu row is disabled with a gray `--`.
 Mirror and rotation are also unavailable. Image brightness
 changes pixel values independently of LED backlight.
 
 For `E1`, page numbers are 0 closed, 1 category rail, 2 Picture, 3 Audio, 4 Display,
-5 Menu Settings and 6 No Signal. Selection is zero-based; editing is bit zero.
+5 Menu Settings, 6 No Signal, 7 Color, 8 OSD Setup, 9 System and 10 Reset
+Settings. Selection is zero-based within the complete page, including hidden
+rows; editing is bit zero.
 For example, `0x0201` means Picture, first row, adjustment active. Selection
 bits are relevant while a menu is open. `menu-state` returns the raw VCP value.
 On the rail, selection 0–3 identifies Picture, Audio, Display or Menu Settings;
 for example, `0x0104` previews Display, and Menu changes to `0x0400` to enter it.
+
+Picture has brightness, contrast, Color, horizontal sharpness and Back. Color
+has red/green/blue gain, saturation and Back. Menu Settings retains splash,
+popup, menu timeout and No Signal, then adds OSD Setup, System and Back.
+OSD Setup has horizontal/vertical position, transparency and Back. System has
+Sleep (minutes), Burn-in, Factory Reset and Back. Factory Reset opens a
+two-row confirmation with Cancel selected; Back also cancels. Selecting Reset
+restores all preferences and returns to the System reset row. A direct `04=1`
+command performs the reset immediately without opening confirmation.
+The host client waits one second after `04=1` before accepting another
+transaction. Reset reapplies several hardware blocks; sending another Set
+and Get after only the usual 50 ms can overrun the receive FIFO. Automation
+that confirms reset through virtual menu keys should also pause one second
+before its next command. The bus ACK alone is not reset-completion status.
+
+Position and transparency affect live menus only, leaving splash artwork,
+no-signal artwork and input timing popups at their existing positions and
+opacity. Horizontal placement uses four-pixel hardware steps. Transparency
+blends the menu background with video from opaque through 7/8 video; text
+remains opaque. Sharpness is horizontal filtering, with 50 retaining the
+original linear filter. See [video register details](video-registers.md) for
+color coefficients and aspect paths. Both aspect build flags default to 1;
+set either to 0 to omit that forced ratio. `E3` reports the effective
+displayed aspect. Its maximum follows the compiled modes; omitted modes and
+16:9 with incompatible input are rejected. A saved 16:9 preference can remain
+stored while the actual display falls back to Keep, and changing build flags
+does not discard other settings merely because that saved mode is unavailable.
 
 Startup Splash controls startup and resume after `D6=4` then `D6=1`. With
 `SETTINGS=0`, a reset restores the build-time `SPLASH` default. No-signal sleep
@@ -74,13 +122,25 @@ open menu postpones sleep and wakes the backlight. Soft power off also stops
 audio and blanks video; DDC/CI remains serviced for resume. The retained vendor
 flash tail is not used for settings storage.
 
+The separate `F3` sleep timer runs even with valid input or an open menu and
+enters soft power off (`D6=4`) when it expires. Its interval starts at boot,
+on a timer-setting request, or on soft power on. Resume with a power-key event
+or `D6=1`; returning input alone does not resume this intentional power-off.
+Resuming starts a full new interval. Timer adjustment steps are one minute.
+
+Burn-in replaces input video with red, green, blue, white and black backgrounds,
+holding each for two seconds. Audio stops during the test; menus and DDC remain
+available so `F4=0` can exit and reacquire input. Reset, factory reset and a
+soft-power transition clear burn-in. Its state is never restored from EEPROM.
+
 ## Settings storage
 
 `SETTINGS=1` is the default for the qualified UC-586 board. It restores picture,
-aspect, volume/mute, splash, popup and timeout preferences before startup display.
+color, sharpness, aspect, volume/mute, OSD position/transparency, splash, popup
+and timeout preferences before startup display.
 Changes are coalesced
 for two seconds, then saved to a separate 24LC16B EEPROM. Soft power and menu
-focus are not saved. Power loss during the two-second delay can discard the
+focus and burn-in are not saved. Power loss during the two-second delay can discard the
 most recent adjustments.
 
 The driver follows GPIO routines found in the UC-586 stock disassembly:
@@ -105,6 +165,23 @@ qualify the reservation separately before enabling storage on another board.
 A complete readback after two hardware saves confirmed that all 1984 bytes
 outside the reservation still matched the original backup. Both records passed
 CRC and commit-marker checks.
+
+The payload now contains 21 bytes within those same two 32-byte records. Its
+first eleven bytes retain the v39 layout; appended fields are red, green, blue,
+saturation, sharpness, OSD X/Y/transparency, sleep minutes and reserved language.
+The explicit compatible loader accepts the old eleven-byte payload and keeps
+defaults for appended fields, choosing the newest valid sequence across both
+formats. The next preference save writes 21 bytes into the other slot and
+retains the old record until the new commit completes. Unknown versions or
+payload lengths remain protected. An older strict loader may recover a
+surviving old-format slot but cannot save beside a newer-format record.
+Host tests cover every migration write interruption, final-readback failure,
+sequence wrap, defaults and preservation outside the reservation. These tests
+do not replace a physical legacy-record migration/power-removal check. The v43
+hardware test saved ten nondefault values in the expanded record and restored
+them after a whole-chip reset: RGB gains, sharpness, saturation, OSD X/Y and
+transparency, volume and aspect mode 3. This verifies the new record's reset
+restoration, not actual removal of board power.
 
 Failed writes leave the runtime preferences usable and report 3 in the low
 byte of `EB`; another setting change permits a new attempt. A valid older record
@@ -142,9 +219,10 @@ uses its XRAM address space. These changes avoid stale flags after reset and
 The v39 image passed full 512 KiB readback with flash protection restored to
 `0x0C`; full-image SHA256 is
 `261633f6b4c6e9241fc396f08d9ae272e80617f4523caffaf037e2403e1dfa29`.
-The default and rainbow-splash SDCC builds pass host checks, using 54,365 and
-63,162 bytes of code respectively, with 353 of 512 XRAM bytes used. The
-`SETTINGS=0` variant also passes.
+For that v39 release, the default and rainbow-splash SDCC builds passed host
+checks using 54,365 and 63,162 bytes of code respectively, with 353 of 512 XRAM
+bytes used. Its `SETTINGS=0` variant also passed. These are historical build
+sizes, not the size of the expanded menu implementation.
 
 For a read-only bench build, use `SETTINGS=0 EEPROM_DIAGNOSTICS=1`.
 Set VCP `E9` to a byte address 0..2046; Get `EA` returns two bytes, high byte
@@ -174,8 +252,9 @@ back to check. Unsupported gets report unsupported; invalid sets leave settings
 unchanged. No host command is automatically retried.
 
 The host defaults to 50 ms transaction spacing for ordinary VCP controls;
-live EEPROM diagnostics use 120 ms as described above. The current cooperative
-save release's hardware stress qualification remains pending. The tester's raw
+live EEPROM diagnostics use 120 ms as described above. The v39 cooperative-save
+release passed the rapid-read and audio stress checks described above; newer
+control checks are recorded below. The tester's raw
 `ddc HEXPACKET 0` and `ddc - N` operations are bounded to 32 bytes and refuse a known active ISP
 session. Capabilities replies are fragmented in groups of at most ten text
 bytes. See the [RP2350 tester instructions](../tools/tester/feather_rp2350/Feather_HSTX_RTD_Tester/README.md)
@@ -185,6 +264,50 @@ backup, authorization, readback and protection safeguards.
 After programming, explicitly run `python host.py reset-chip` before returning
 the tester to `mode 640`. An ISP-only MCU restart retained DDC peripheral state
 on the bench; a whole-chip reset restored the live interface.
+
+On 2026-09-30, the expanded controls passed these UC-586 checks:
+
+- v40: Color, OSD Setup, System and reset-confirmation navigation, Settings
+  pagination and Cancel passed. The menu was positioned at the top right and
+  displayed with transparency set to 100. A one-minute intentional sleep
+  switched soft power off after 60 seconds; DDC power-on resumed it. Burn-in
+  cycled red, green, blue, white and black at two-second intervals and exited
+  back to input.
+- v41: the compressed no-signal bitmap displayed correctly, and the 30-second
+  no-signal sleep setting switched the physical backlight off.
+- v43: immediate Get readback after factory reset returned all nineteen checked
+  defaults. A request arriving during the reset setter is now retained rather
+  than discarded when the receive FIFO is reset; the host transport regression
+  also injects and checks that exact sequence. Ten nondefault preferences in
+  the expanded EEPROM record restored after a whole-chip reset as listed above.
+- v43: sharpness changes to 0, 100 and 50 and a fifteen-read sequence at 50 ms
+  spacing passed. Camera comparison of Fill at sharpness 0 versus 100 showed
+  a modest edge change; this is a functional check, not image calibration.
+- The experimental 16:9 build displayed the complete 640x480 test grid across
+  an 800x450 image, including all fifteen grid rows. Input off/on recovery and
+  a menu at the bottom of that viewport also passed.
+- v44 with the HSTX native 800x480/525-line input: Keep showed the complete
+  800x480 grid; forced 4:3 retained all 25 columns, all 15 rows and both red
+  borders in a centered 640-pixel image with 80-pixel sidebars. Forced 16:9
+  showed the complete image in an 800x450 letterbox, and 4:3 restored after
+  input off/on. CVT 4:3 remains physically untested; CVT 16:9 falls back to
+  Keep. These results qualify geometry. Native-800 audio failed continuity
+  with periodic mutes/pops; the tester is left in its passing 640 mode.
+- v44's corrected saturation precision produced luminance bars at 0, reduced
+  chroma at 25 and the original bars at 50; the DDC sweep passed. Gray ramps
+  at 0/100 were broadly preserved with a common camera/panel blue cast. This
+  is not color calibration. Saturation-100 coefficient arithmetic is host
+  tested; already-maximal primary colors clip and do not demonstrate its
+  full adjustment range.
+- Red gain zero removed red in v40; green and blue gain zero each removed
+  their channel in v44, and returning each gain to 50 restored it.
+- The final v44 client check sent factory reset, volume 50 and 21 control
+  readbacks successfully with the one-second reset pause. Preferences saved
+  to EEPROM. The release bank matched the fully verified installed image;
+  flash protection was restored to `0x0C`.
+
+Actual board power removal and restoration remains untested. The dated v39
+audio/save stress results below and above are separate from these newer checks.
 
 The 2026-09-29 v31 font/icon-rail build passed full 512 KiB readback and restored
 protection to `0x0C`; its full-image SHA256 was

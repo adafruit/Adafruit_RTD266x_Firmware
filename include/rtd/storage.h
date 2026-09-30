@@ -27,6 +27,12 @@ uint16_t board_eeprom_diagnostic(void);
  * transactions. Call load/save only from the foreground, never DDC callbacks.
  */
 uint8_t store_load(uint8_t *values, uint8_t count);
+/* Explicitly accept one shorter, prefix-compatible payload at boot. The newest
+ * valid recognized record wins; appended fields keep the caller's defaults.
+ * Subsequent saves use count and migrate atomically. previous_count must be
+ * smaller than count; zero is strict loading, as used by store_load(). */
+uint8_t store_load_compatible(uint8_t *values, uint8_t count,
+                              uint8_t previous_count);
 uint8_t store_save(const uint8_t *values, uint8_t count);
 uint8_t store_status(void);
 

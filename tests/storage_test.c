@@ -6,6 +6,7 @@
 
 static uint8_t memory[2048];
 static unsigned writes, cut_after, fail_read;
+static unsigned fail_read_after_writes;
 static uint8_t write_protected;
 static uint8_t testing_save, in_callback, pending_transaction;
 static uint8_t *changed_values;
@@ -18,7 +19,7 @@ uint8_t board_eeprom_read(uint16_t address, uint8_t *data, uint8_t count) {
     assert(count <= 4 && !pending_transaction);
     pending_transaction = 1;
   }
-  if (fail_read)
+  if (fail_read || (fail_read_after_writes && writes >= fail_read_after_writes))
     return 0;
   memcpy(data, memory + address, count);
   return 1;
@@ -61,6 +62,164 @@ static void load_expect(const uint8_t *expected, uint8_t count) {
   assert(store_load(restored, count));
   assert(store_status() == STORE_LOADED);
   assert(!memcmp(restored, expected, count));
+}
+
+static void compatible_expect(const uint8_t *defaults, const uint8_t *expected) {
+  uint8_t restored[21];
+  memcpy(restored, defaults, sizeof restored);
+  assert(store_load_compatible(restored, sizeof restored, 11));
+  assert(store_status() == STORE_LOADED);
+  assert(!memcmp(restored, expected, sizeof restored));
+}
+
+static void migration_test(void) {
+  uint8_t legacy[11] = {50, 50, 100, 0, 1, 1, 2, 0, 2, 100, 0};
+  uint8_t defaults[21], expected[21], restored[21];
+  uint8_t legacy_slots[64], first_legacy[64], mixed_slots[64];
+  uint8_t single_new[32], foreign[32];
+  uint8_t outside[sizeof memory];
+  unsigned before, fail;
+
+  memset(memory, 0x73, sizeof memory);
+  memset(memory + STORE_ADDRESS, 0xff, sizeof legacy_slots);
+  memcpy(outside, memory, sizeof outside);
+  memset(defaults, 0x55, sizeof defaults);
+  memcpy(expected, defaults, sizeof expected);
+  assert(!store_load(restored, sizeof legacy));
+  assert(store_save(legacy, sizeof legacy));
+  memcpy(first_legacy, memory + STORE_ADDRESS, sizeof first_legacy);
+  legacy[0] = 75;
+  assert(store_save(legacy, sizeof legacy));
+  memcpy(expected, legacy, sizeof legacy);
+  memcpy(legacy_slots, memory + STORE_ADDRESS, sizeof legacy_slots);
+
+  /* Strict loading must never infer compatibility merely from payload size. */
+  before = writes;
+  memcpy(restored, defaults, sizeof restored);
+  assert(!store_load(restored, sizeof restored));
+  assert(store_status() == STORE_UNAVAILABLE);
+  assert(!memcmp(restored, defaults, sizeof restored));
+  assert(!store_save(expected, sizeof expected) && writes == before);
+
+  compatible_expect(defaults, expected);
+  before = writes;
+  assert(store_save(expected, sizeof expected));
+  assert(writes - before == 10);
+  memcpy(mixed_slots, memory + STORE_ADDRESS, sizeof mixed_slots);
+  assert(!memcmp(mixed_slots + STORE_SLOT_SIZE,
+                 legacy_slots + STORE_SLOT_SIZE, STORE_SLOT_SIZE));
+  compatible_expect(defaults, expected);
+  before = writes;
+  assert(store_save(expected, sizeof expected) && writes == before);
+
+  /* Downgrading retains and may load its older compatible data, but cannot
+   * overwrite a recognized newer payload, even when it wants to save. */
+  load_expect(legacy, sizeof legacy);
+  assert(!store_save(legacy, sizeof legacy) && writes == before);
+  assert(!memcmp(memory + STORE_ADDRESS, mixed_slots, sizeof mixed_slots));
+  compatible_expect(defaults, expected);
+
+  /* Both old slots are occupied. Every interrupted migration must retain the
+   * latest legacy record and retry safely after reboot with appended defaults. */
+  for (fail = 1; fail <= 10; ++fail) {
+    memcpy(memory + STORE_ADDRESS, legacy_slots, sizeof legacy_slots);
+    compatible_expect(defaults, expected);
+    cut_after = writes + fail;
+    assert(!store_save(expected, sizeof expected));
+    assert(store_status() == STORE_ERROR);
+    cut_after = 0;
+    assert(!memcmp(memory + STORE_ADDRESS + STORE_SLOT_SIZE,
+                   legacy_slots + STORE_SLOT_SIZE, STORE_SLOT_SIZE));
+    compatible_expect(defaults, expected);
+    assert(store_save(expected, sizeof expected));
+    compatible_expect(defaults, expected);
+  }
+
+  /* A blank inactive slot has no old header to preserve during migration. */
+  expected[0] = 50;
+  for (fail = 1; fail <= 10; ++fail) {
+    memcpy(memory + STORE_ADDRESS, first_legacy, sizeof first_legacy);
+    compatible_expect(defaults, expected);
+    cut_after = writes + fail;
+    assert(!store_save(expected, sizeof expected));
+    cut_after = 0;
+    assert(!memcmp(memory + STORE_ADDRESS, first_legacy, STORE_SLOT_SIZE));
+    compatible_expect(defaults, expected);
+    assert(store_save(expected, sizeof expected));
+    compatible_expect(defaults, expected);
+  }
+  expected[0] = legacy[0];
+
+  /* Once the commit write has landed, a failed final readback still leaves
+   * a complete new record for the next boot. */
+  memcpy(memory + STORE_ADDRESS, legacy_slots, sizeof legacy_slots);
+  compatible_expect(defaults, expected);
+  fail_read_after_writes = writes + 10;
+  assert(!store_save(expected, sizeof expected));
+  fail_read_after_writes = 0;
+  memset(restored, 0, sizeof restored);
+  compatible_expect(restored, expected);
+
+  /* Sequence, not payload length or slot order, decides between two valid
+   * formats. Here the new-format record has sequence 0 and legacy has 1. */
+  memset(memory + STORE_ADDRESS, 0xff, sizeof legacy_slots);
+  assert(!store_load(restored, sizeof restored));
+  assert(store_save(defaults, sizeof defaults));
+  memcpy(single_new, memory + STORE_ADDRESS, sizeof single_new);
+  memcpy(memory + STORE_ADDRESS, legacy_slots, sizeof legacy_slots);
+  memcpy(memory + STORE_ADDRESS, single_new, sizeof single_new);
+  compatible_expect(defaults, expected);
+
+  /* Unknown lengths remain protected even when CRC and version are valid. */
+  memset(memory + STORE_ADDRESS, 0xff, sizeof legacy_slots);
+  assert(!store_load(restored, 12));
+  assert(store_save(defaults, 12));
+  memcpy(foreign, memory + STORE_ADDRESS, sizeof foreign);
+  memcpy(memory + STORE_ADDRESS, mixed_slots, sizeof mixed_slots);
+  memcpy(memory + STORE_ADDRESS + STORE_SLOT_SIZE, foreign, sizeof foreign);
+  compatible_expect(defaults, expected);
+  before = writes;
+  assert(!store_save(expected, sizeof expected) && writes == before);
+  assert(!memcmp(memory + STORE_ADDRESS + STORE_SLOT_SIZE, foreign, sizeof foreign));
+
+  /* Recognizable unknown versions and lengths are protected even with a bad
+   * CRC. A future schema must not look like a recoverable torn old record. */
+  memcpy(memory + STORE_ADDRESS, mixed_slots, sizeof mixed_slots);
+  memory[STORE_ADDRESS + STORE_SLOT_SIZE + 4] = 2;
+  compatible_expect(defaults, expected);
+  assert(!store_save(expected, sizeof expected) && writes == before);
+  memcpy(memory + STORE_ADDRESS, mixed_slots, sizeof mixed_slots);
+  memory[STORE_ADDRESS + STORE_SLOT_SIZE + 5] = 22;
+  compatible_expect(defaults, expected);
+  assert(!store_save(expected, sizeof expected) && writes == before);
+
+  /* Invalid API combinations leave defaults and the reservation untouched. */
+  memcpy(memory + STORE_ADDRESS, mixed_slots, sizeof mixed_slots);
+  memcpy(restored, defaults, sizeof restored);
+  assert(!store_load_compatible(restored, 21, 21));
+  assert(!store_save(expected, sizeof expected) && writes == before);
+  assert(!store_load_compatible(restored, 11, 21));
+  assert(!store_load_compatible(restored, 0, 0));
+  assert(!store_load_compatible(restored, 22, 11));
+  assert(!memcmp(restored, defaults, sizeof restored));
+  assert(!memcmp(memory + STORE_ADDRESS, mixed_slots, sizeof mixed_slots));
+
+  /* A legacy sequence of 65535 migrates to new format at zero. */
+  memset(memory + STORE_ADDRESS, 0xff, sizeof legacy_slots);
+  assert(!store_load(restored, sizeof legacy));
+  for (before = 0; before < 65536; ++before) {
+    legacy[0] = before & 1;
+    assert(store_save(legacy, sizeof legacy));
+  }
+  memcpy(expected, legacy, sizeof legacy);
+  compatible_expect(defaults, expected);
+  assert(store_save(expected, sizeof expected));
+  memset(restored, 0, sizeof restored);
+  compatible_expect(restored, expected);
+  assert(!memcmp(memory, outside, STORE_ADDRESS));
+  assert(!memcmp(memory + STORE_ADDRESS + sizeof legacy_slots,
+                 outside + STORE_ADDRESS + sizeof legacy_slots,
+                 sizeof memory - STORE_ADDRESS - sizeof legacy_slots));
 }
 
 int main(void) {
@@ -209,6 +368,8 @@ int main(void) {
   }
   load_expect(settings, sizeof settings);
 
-  puts("settings storage: CRC, commit order, interrupted writes, protection, wear, wrap passed");
+  migration_test();
+
+  puts("settings storage: CRC, commit order, interrupted writes, protection, wear, wrap, migration passed");
   return 0;
 }

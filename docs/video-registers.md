@@ -105,10 +105,10 @@ among the VGA/native/CVT profiles. On 2026-09-29, the UC-586 displayed the HSTX
 visible. Full 512 KiB readback matched and protection returned to 0x0C. This
 bench check covered VGA; the native/CVT transitions were checked on the host.
 
-The new filter is a triangular linear-interpolation kernel generated at startup:
+The neutral filter is a triangular linear-interpolation kernel generated at startup:
 for `p=0..15`, the stored tap weights are
 `[0, 16+32*p, 1008-32*p, 0]`. Every phase sums to 1024; there are no negative
-lobes. The 4-tap/32-phase interpretation, half-phase alignment, and normalization
+lobes at the neutral setting. The 4-tap/32-phase interpretation, half-phase alignment, and normalization
 are inferences from numerical inspection of a working filter, not guarantees
 in the manual. Earlier firmware used 0xCCCCD for 640/800 horizontal expansion;
 a grid expanded to the full panel with its border visible in the first
@@ -118,6 +118,156 @@ fidelity have not been characterized.
 The manual p41 specifies 64 stored 12-bit coefficients, low byte first, with
 the other half supplied by symmetry. The new table is loaded into inactive
 bank 2 for both color paths and selected only for horizontal filtering.
+
+## Picture controls
+
+Image brightness and contrast use common-page CR64/CR65 Set A, documented on
+manual pp61-62. Each accepts 0..100, with 50 mapping to the neutral coefficient
+128. Brightness applies the same signed offset to all channels. Red, green,
+and blue gains independently multiply the corresponding contrast coefficient;
+50 is unity, zero removes that channel, and 100 requests twice its gain. The
+combined gain saturates at the hardware maximum of 255, so maximum contrast and
+maximum channel gain cannot multiply into a fourfold hardware gain.
+
+Saturation uses the common-page sRGB matrix, not the video-decoder chroma
+register or a YUV-only peaking path. Manual pp60-61 defines its transform as
+`I + C`, with signed coefficients and per-channel offsets. The original
+Q8 matrix generator mixes toward luma weights `[77,150,29]/256`, an integer
+approximation of BT.601. The transform produces greyscale at zero, bypasses the
+matrix at 50, and doubles chroma displacement from luma at 100. Each matrix
+row sums exactly to unity after integer rounding, preserving neutral grey.
+It writes sign/high byte followed by low byte in a contiguous six-byte row,
+clears the three offsets, and requests the DVS latch with CR62 bit7 while
+retaining the blue-row selector. No inherited coefficient table is used.
+
+UC-586 requires CR62[6]=1 and CR64[6]=1: the documented two-bit coefficient
+left shift. The reference calculation retains Q10 through multiplication,
+halves the final C, and enables one-bit enlargement. Together with the bench
+result, this supports a 1024 multiplier denominator on the target silicon,
+despite the manual's eight-fractional-bit description. Our Q8 coefficients
+therefore need the fourfold shift. Brightness/contrast updates preserve both
+precision bits. Neutral still bypasses the matrix.
+
+The v40-v43 builds produced only partial desaturation at zero. A live v42
+readback showed CR60=00, CR62=1F, CR64=00, CR68=01, and page7:D8=00, ruling
+out highlight masking, disabled sRGB, and an unapplied DVS latch. Neither
+latch-sequence alignment nor contiguous row writes resolved the weak effect.
+The precision change in v44 did: on 2026-09-30, the UC-586 showed luminance
+bars at saturation zero, reduced chroma at 25, and the original colors at 50.
+The original saturated primaries clip at 100, so they cannot demonstrate
+additional chroma gain; that endpoint's arithmetic is host-tested. Grey-ramp
+captures at 0 and 100 preserved the broad luminance ramp and common panel/
+camera color cast. These are functional image checks, not colorimetry.
+DDC setting readbacks passed throughout the sweep. Evidence is in the bench
+captures `fresh-v44-osd-controls/{sat0,bars-sat25,bars-sat50,bars-sat100,
+gray-sat0,gray-sat100}.png` and `saturation-readback.json`.
+
+The 0..100 sharpness control operates horizontally. At 50 it preserves the
+existing linear filter and bypasses filtering for 1:1 display. Other settings
+enable horizontal filtering even at unity geometry. The generated kernel
+convolves linear interpolation with `[-a,1+2a,-a]`, where
+`a=(sharpness-50)/200`: zero softens, 50 is neutral, and 100 applies a modest
+unsharp mask. Every phase sums exactly to 1024 and fits signed 12-bit storage.
+The inactive coefficient bank is written before the horizontal bank is
+switched; receiver, PLL, frame timing, and vertical scaling remain unchanged.
+The signed coefficient convention and phase layout were inferred from the
+established scaler tables. On 2026-09-30, 4K captures of 640x480 expanded in
+Fill mode showed softer edges at zero and modestly crisper edges at 100.
+Detailed filter response and the visual effect at 1:1 remain uncharacterized.
+Evidence is `fresh-v43-color-stream/fill-sharp0.png` and `fill-sharp100.png`.
+
+Factoring four out of every interpolation slope keeps products within signed
+16-bit range. A complete host sweep verifies every coefficient against the
+original 32-bit formula, including truncation toward zero. A synchronous
+upload still exceeded the DDC response window. Setters now only queue a
+percentage; `video_controls_service()` writes
+one coefficient into the inactive bank per call, and selects it after all 64
+are complete. A new request restarts that bank without exposing a partial
+filter. Startup drains the queue synchronously before DDC initialization;
+the monitor services later changes even during signal loss. This needs only
+two extra bytes of state and no coefficient buffer. The v42 bench passed
+immediate DDC Gets with the normal 50 ms response window, including 15 reads
+each after sharpness 0, 100, and 50.
+
+Host tests sweep all saturation and sharpness values, verify grey/DC
+preservation, signed encodings, inactive-bank writes, gain/contrast composition,
+clamping, and unchanged geometry. These prove arithmetic and register writes,
+not the physical image response or color calibration.
+
+## Forced aspect ratios
+
+The aspect API names Keep=0, Fill=1, 4:3=2, and 16:9=3. Callers query current
+availability before accepting a user change. Unsupported or invalid choices
+leave the previous selection intact, except that an enabled 16:9 build retains
+a saved preference across incompatible sources and falls back to Keep.
+`video_aspect_current()` reports the actual display mode, including this
+fallback. Keep and Fill retain their established behavior.
+
+`RTD_ASPECT_4_3=1` enables the horizontal downscaler and is the default.
+An 800x480 source retains its complete capture window,
+then UZD produces 640x480 for the FIFO and centered display. A 640x480 source
+already has the requested shape and bypasses UZD. All three timing profiles
+retain their existing pixel clock, full-panel DE raster, and frame-delay values.
+
+Manual pp150-155 documents page 6 E3/E4 enable, RGB boundary selection, table
+selection and buffer controls; E5-E7 use `input_width/output_width * 2^20`.
+800/640 therefore uses 0x140000. Zero nonlinear delta and first segment leave
+the entire output in the 640-pixel second segment. The auxiliary buffer stays
+bypassed, which the manual explicitly permits for horizontal UZD. FIFO width
+follows the post-downscale width (manual p37). Phase initialization uses the
+vendor-observed `255 - input_width*255/output_width` convention, giving 193.
+
+UZD's original four-tap filter convolves linear interpolation with
+`[1/8,3/4,1/8]` for mild smoothing before subsampling. It has eight stored
+half-phases, each summing to 1024. The 32 coefficients are written low byte
+first in the manual's F3/F4 order, while UZD is disabled. Phase interpretation
+and normalization are behavioral inferences from a working reference, not a
+copied table. Native/CVT/VGA transitions and full-source capture are host-tested.
+The UC-586 native 800x480 bench check confirmed complete-source downscaling and
+alignment; forced 4:3 with the 500-line CVT source has not been physically tested.
+
+`RTD_ASPECT_16_9=1` enables the qualified 525-line timing configuration and is
+the default. Fitting the entire
+source into an 800x450 picture requires vertical downscaling. With line-buffer
+streaming, the reference driver changes display line rate in proportion to
+output/input height; simply changing the picture height at the existing clock
+would overrun or underrun buffering. A 500-line CVT frame at 450/480 line rate
+has only 468.75 output lines, fewer than this panel's 480 active rows. A 525-line
+source offers 492.1875 output lines and permits the following configuration:
+
+- The previously matched display clock is multiplied by 15/16, giving
+  29.53125 MHz for a nominal 31.5 MHz source-matched output clock. Availability
+  requires the reduced clock to stay within the existing 29.5 MHz lower bound.
+- The full 480-row background/DE raster runs from line 6 to 486; picture lines
+  21 to 471 supply a complete 800x450 image with 15-row black bars. The DTG
+  watchdog total is 493; actual DVS stays synchronized to the 525-line input.
+- UZD vertical factor is `floor(480/450 * 2^20) = 0x111111`, with phase
+  initializer 239 and H-to-V auxiliary buffer mode. FIFO height is 450; the
+  capture remains all 480 source lines. VGA still expands horizontally to 800.
+- The frame delay preserves each source mode's measured first-pixel lead after
+  converting the old and new display origins into input-clock units. It adds
+  one quarter input line because the reference vertical-downscale FIFO target
+  is 1.75 lines versus 1.5 at unity. CR41 rounding is below 16 input clocks.
+
+These shortened porches and delay adjustments were tested on the UC-586 with
+both supported 525-line input widths. Host tests additionally check complete
+capture, the 450/480 windows, DPLL
+arithmetic, delay arithmetic, and restoration of every original raster on exit.
+CVT or a too-low matched clock automatically uses Keep; returning to a compatible
+source restores the saved 16:9 preference. No-input and signal-loss states
+report Keep and restore the known startup raster. The driver never labels a
+cropped image or an incompatible fallback as an active forced 16:9 picture.
+
+On 2026-09-30, v44 displayed a complete 800x480 HSTX grid in Keep. Forced
+4:3 preserved all 25 columns, 15 rows, and both red side borders inside the
+centered 640-pixel picture, with 80-pixel black sidebars. Forced 16:9 retained
+the full grid in the 800x450 letterboxed picture. Forced 4:3 returned after
+source off/on. The earlier 640x480 check also preserved the complete grid in
+16:9 and returned correctly to Keep. Evidence is in
+`fresh-v44-osd-controls/800-keep-grid.png`, `800-aspect43-grid.png`,
+`800-aspect169-grid.png`, and `800-aspect43-return.png`; these qualify the
+video paths, not audio at the new source timing. Detailed resampling quality
+has not been characterized.
 
 ## Startup and missing input
 

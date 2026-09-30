@@ -10,6 +10,21 @@
 #define VIDEO_XDATA
 #endif
 
+/* UC-586 downscaler modes qualified with the supported 525-line inputs. */
+#ifndef RTD_ASPECT_4_3
+#define RTD_ASPECT_4_3 1
+#endif
+#ifndef RTD_ASPECT_16_9
+#define RTD_ASPECT_16_9 1
+#endif
+
+enum {
+  VIDEO_ASPECT_KEEP = 0,
+  VIDEO_ASPECT_FILL = 1,
+  VIDEO_ASPECT_4_3 = 2,
+  VIDEO_ASPECT_16_9 = 3
+};
+
 enum {
   VIDEO_OK = 0,
   VIDEO_DIGITAL_TIMEOUT = 1,
@@ -64,8 +79,24 @@ void video_init(void);
 void video_service(void);
 /* Percent controls clamp at 100; 50 gives neutral brightness and contrast. */
 void video_set_picture(uint8_t brightness, uint8_t contrast);
-/* Zero keeps the source aspect; nonzero fills the panel horizontally. */
-void video_set_aspect(uint8_t fill);
+/* RGB gains and saturation are 0..100, with 50 neutral. RGB gains multiply
+ * contrast, with the resulting hardware coefficient clamped at its maximum. */
+void video_set_color(uint8_t red, uint8_t green, uint8_t blue,
+                     uint8_t saturation);
+/* Horizontal softening/sharpening, including 1:1 input. 50 is the original
+ * linear filter; the filter remains bypassed at 1:1 when neutral. A setter
+ * queues/restarts the inactive-bank upload; 64 service calls apply it. */
+void video_set_sharpness(uint8_t percent);
+/* Call unconditionally every monitor tick, including while input is absent.
+ * Uploads at most one coefficient and only selects a fully written bank. */
+void video_controls_service(void);
+/* Availability of the 16:9 mode depends on the current input.
+ * Its saved preference falls back to Keep for incompatible input. Check
+ * availability before accepting a user change; current reports the actual
+ * displayed aspect. Other unsupported/invalid choices are ignored. */
+uint8_t video_aspect_available(uint8_t mode);
+uint8_t video_aspect_current(void);
+void video_set_aspect(uint8_t mode);
 /* Returns zero for absent, timed-out, or unsupported input. The result lives
  * in XRAM so SDCC can address fields directly without a large generic-pointer
  * stack frame underneath DDC callbacks. */

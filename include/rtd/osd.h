@@ -21,6 +21,12 @@ enum {
 void osd_show_menu_preview(uint8_t page, uint8_t variant);
 /* Restore the overlay port if a hardware background transition cleared it. */
 void osd_service(void);
+/* Apply on the next live-menu draw only. Position is 0..100 inside the
+ * visible panel, with 50 centered (four-pixel horizontal steps). Transparency
+ * 0..100 maps to eight background-blending levels, opaque through 7/8 video;
+ * foreground text stays opaque. Out-of-range arguments clamp to 100.
+ */
+void osd_set_menu_style(uint8_t x, uint8_t y, uint8_t transparency);
 /* Framed live menu; caller supplies up to five items between title/footer. */
 /* Tab 0..3 selects Picture/Audio/Display/Settings; rail_focus highlights
  * category navigation instead of a setting in the right pane. */

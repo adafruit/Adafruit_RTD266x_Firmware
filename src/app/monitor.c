@@ -52,6 +52,9 @@ void main(void) {
   static uint32_t info_started = 0;
   static uint32_t missing_started = 0, timeout;
   static uint8_t missing = 0, sleeping = 0, was_powered = 1;
+  static uint8_t burn_phase = 0xff;
+  static uint8_t signal_ready;
+  static uint32_t burn_started;
 #if RTD_MENU_PREVIEW
   static uint8_t preview_page, preview_variant;
 #endif
@@ -87,6 +90,16 @@ void main(void) {
 #endif
 
   for (;;) {
+    if (control_power_changed()) {
+      /* Preserve brief off/on requests even when both arrived while an OSD
+       * bitmap was uploading. A wake command starts a fresh loss interval. */
+      missing = sleeping = 0;
+      burn_phase = 0xff;
+      displayed_mode = candidate_mode = VIDEO_MODE_NONE;
+      matching_samples = 0;
+      if (control_power()) was_powered = 0;
+      screen = 0xff;
+    }
     if (control_overlay_changed())
       screen = 0xff;
     if (!control_power()) {
@@ -99,7 +112,36 @@ void main(void) {
       was_powered = 0;
       displayed_mode = candidate_mode = VIDEO_MODE_NONE;
       matching_samples = 0;
+      /* Resume starts a fresh no-signal interval. The physical gate is turned
+       * on by the power command, so a retained sleeping flag would be stale. */
+      missing = sleeping = 0;
+      burn_phase = 0xff;
+    } else if (control_burn_in()) {
+      /* A transient solid-color panel test. Keep the menu and DDC alive so
+       * the test can be stopped without unplugging; never save this mode. */
+      if (burn_phase == 0xff) {
+        audio_stop();
+        video_blank(1);
+        board_backlight_power(1);
+        if (!control_menu_open()) osd_hide();
+        burn_phase = 0;
+        burn_started = platform_millis();
+        video_background(255, 0, 0);
+      } else if ((uint32_t)(platform_millis() - burn_started) >= 2000) {
+        burn_phase = (burn_phase + 1) % 5;
+        burn_started = platform_millis();
+        video_background(burn_phase == 0 || burn_phase == 3 ? 255 : 0,
+                         burn_phase == 1 || burn_phase == 3 ? 255 : 0,
+                         burn_phase == 2 || burn_phase == 3 ? 255 : 0);
+      }
+      displayed_mode = candidate_mode = VIDEO_MODE_NONE;
+      matching_samples = missing = sleeping = 0;
+      screen = 0xff;
     } else {
+      if (burn_phase != 0xff) {
+        burn_phase = 0xff;
+        video_background(0, 0, 0);
+      }
       if (!was_powered) {
         was_powered = 1;
         if (control_setting(SET_SPLASH)) {
@@ -109,7 +151,11 @@ void main(void) {
         }
         screen = 0xff;
       }
-      if (!video_measure(&signal)) {
+      signal_ready = video_measure(&signal);
+      /* Measurement services DDC. A power/test request must win over the
+       * acquisition decision made before that callback ran. */
+      if (!control_power() || control_burn_in()) continue;
+      if (!signal_ready) {
         audio_stop();
         video_blank(1);
         if (!missing) {
@@ -194,11 +240,13 @@ void main(void) {
     for (audio_tick = 0; audio_tick < 25; ++audio_tick) {
       ddcci_service();
       control_service(platform_millis());
+      video_controls_service();
       if (displayed_mode != VIDEO_MODE_NONE)
         video_service();
       osd_service();
       audio_service(platform_millis(),
-                    control_power() && displayed_mode != VIDEO_MODE_NONE);
+                    control_power() && !control_burn_in() &&
+                    displayed_mode != VIDEO_MODE_NONE);
       platform_delay_ms(10);
     }
   }

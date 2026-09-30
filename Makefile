@@ -10,6 +10,8 @@ TRACE ?= 0
 MENU_PREVIEW ?= 0
 SETTINGS ?= 1
 AUDIO_VOLUME ?= 1
+ASPECT_4_3 ?= 1
+ASPECT_16_9 ?= 1
 EEPROM_DIAGNOSTICS ?= 0
 SDCC ?= sdcc
 HOST_CC ?= cc
@@ -25,6 +27,12 @@ OUT := $(OUT)-volatile
 endif
 ifeq ($(AUDIO_VOLUME),0)
 OUT := $(OUT)-no-volume
+endif
+ifeq ($(ASPECT_4_3),0)
+OUT := $(OUT)-no-aspect43
+endif
+ifeq ($(ASPECT_16_9),0)
+OUT := $(OUT)-no-aspect169
 endif
 ifeq ($(EEPROM_DIAGNOSTICS),1)
 OUT := $(OUT)-eeprom-diagnostics
@@ -44,12 +52,13 @@ OBJECTS := $(patsubst %.c,$(OUT)/%.rel,$(SOURCES))
 HEADERS := $(wildcard include/rtd/*.h boards/$(BOARD)/*.h)
 BITMAP_HEADER := $(OUT)/generated/splash_bitmap.h
 NO_SIGNAL_HEADER := $(OUT)/generated/no_signal_bitmap.h
+VIDEO_TEST := $(OUT)/tests/video_test
 OSD_TEST := $(OUT)/tests/osd_test
 AUDIO_TEST := $(OUT)/tests/audio_test
 DDCCI_TEST := $(OUT)/tests/ddcci_test
 CONTROL_TEST := $(OUT)/tests/control_test
 DEFINES := -DRTD_SPLASH=$(SPLASH) -DRTD_AUDIO_VOLUME=$(AUDIO_VOLUME) \
-           -DRTD_SETTINGS=$(SETTINGS) -DRTD_EEPROM_DIAGNOSTICS=$(EEPROM_DIAGNOSTICS)
+           -DRTD_SETTINGS=$(SETTINGS) -DRTD_ASPECT_4_3=$(ASPECT_4_3) -DRTD_ASPECT_16_9=$(ASPECT_16_9) -DRTD_EEPROM_DIAGNOSTICS=$(EEPROM_DIAGNOSTICS)
 CFLAGS := -mmcs51 --std-c11 --model-large --stack-auto --no-xinit-opt \
           -Iinclude -Iboards/$(BOARD) -I$(OUT)/generated \
           $(DEFINES) -DRTD_TRACE=$(TRACE) -DRTD_MENU_PREVIEW=$(MENU_PREVIEW)
@@ -80,10 +89,10 @@ $(OUT)/firmware.ihx: $(OBJECTS)
 $(OUT)/firmware.bin: $(OUT)/firmware.ihx
 	makebin -s 65536 $< $@
 
-check: firmware build/tests/edid_test build/tests/video_test $(AUDIO_TEST) $(DDCCI_TEST) $(CONTROL_TEST) build/tests/board_test build/tests/eeprom_test build/tests/storage_test $(OSD_TEST)
+check: firmware build/tests/edid_test $(VIDEO_TEST) $(AUDIO_TEST) $(DDCCI_TEST) $(CONTROL_TEST) build/tests/board_test build/tests/eeprom_test build/tests/storage_test $(OSD_TEST)
 	python3 tests/bitmap_test.py
 	build/tests/edid_test
-	build/tests/video_test
+	$(VIDEO_TEST)
 	$(AUDIO_TEST)
 	$(DDCCI_TEST)
 	$(CONTROL_TEST)
@@ -96,9 +105,9 @@ build/tests/edid_test: tests/edid_test.c src/rtd/edid.c panels/$(PANEL).c $(HEAD
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Iboards/$(BOARD) $< src/rtd/edid.c panels/$(PANEL).c -o $@
 
-build/tests/video_test: tests/video_test.c src/rtd/video.c $(HEADERS)
+$(VIDEO_TEST): tests/video_test.c src/rtd/video.c $(HEADERS) Makefile
 	@mkdir -p $(dir $@)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Iboards/$(BOARD) $< src/rtd/video.c -o $@
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(DEFINES) -Iinclude -Iboards/$(BOARD) $< src/rtd/video.c -o $@
 
 $(AUDIO_TEST): tests/audio_test.c src/rtd/audio.c $(HEADERS) Makefile
 	@mkdir -p $(dir $@)
@@ -126,4 +135,4 @@ build/tests/storage_test: tests/storage_test.c src/app/storage.c $(HEADERS)
 
 $(OSD_TEST): tests/osd_test.c src/rtd/osd.c panels/$(PANEL).c $(HEADERS) $(BITMAP_HEADER) $(NO_SIGNAL_HEADER) Makefile
 	@mkdir -p $(dir $@)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Iinclude -Iboards/$(BOARD) -I$(OUT)/generated $< src/rtd/osd.c panels/$(PANEL).c -o $@
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -DRTD_MENU_PREVIEW=1 -Iinclude -Iboards/$(BOARD) -I$(OUT)/generated $< src/rtd/osd.c panels/$(PANEL).c -o $@

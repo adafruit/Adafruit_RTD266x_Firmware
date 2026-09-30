@@ -1,3 +1,5 @@
 * text=auto eol=lf
 *.bin binary
 *.png binary
+# Unified patches require a leading space on blank context lines.
+*.patch whitespace=-blank-at-eol

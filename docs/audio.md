@@ -79,6 +79,16 @@ names. The following UC-586 measurement qualifies this mapping on our chip.
 
 ## Validation
 
+On 2026-09-30, the experimental 800x480 HSTX tester mode passed video grid
+checks with Keep, 4:3 and 16:9, including source off/on recovery, but **failed
+audio continuity**. At volume 50, active portions carried the 1 kHz tone near
+-21.36 dBFS; periodic mutes and pops produced analysis-window levels from
+-70.83 to -13.16 dBFS. A comparison after returning to 640x480 measured
+1000 Hz at -21.426 dBFS, with all 20 windows between -21.441 and -21.412 dBFS
+and no observed dropouts. Use the tester's **mode 640 for normal audio
+testing**. The 800-mode failure remains unresolved; its working video does
+not qualify its audio path.
+
 On 2026-09-29, the v34 volume probe measured these levels through the existing
 C-Media analog capture path while the HSTX source sent the same 1 kHz tone:
 

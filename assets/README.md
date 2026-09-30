@@ -77,10 +77,17 @@ Retain the appropriate license for your own artwork.
 The converter uses Python 3 and Pillow (`pip3 install Pillow`). It can also be
 run directly: `python3 tools/bmp_to_header.py input.bmp output.h`. It preserves
 the output timestamp when the result is unchanged. The generated firmware data
-contains an RGB palette and ready-to-upload OSD tiles. The 8051 does no pixel
+contains an RGB palette and losslessly compressed OSD tiles. The 8051 expands
+run/literal packets directly into OSD SRAM, without a RAM image buffer or pixel
 packing during startup. A row-major reference is included only for host tests:
 one-bit pixels are MSB first, and four-bit indices use the high nibble first.
-The default firmware asset is 756 tile bytes plus a six-byte palette.
+The default firmware asset is 456 compressed tile bytes plus a six-byte palette;
+it expands to the same 756 bytes in OSD SRAM. The rainbow splash and no-signal
+artwork use 6,619 and 5,790 compressed tile bytes, respectively, each expanding
+to 9,720 bytes. Compression preserves every pixel and does not change colors,
+resolution or layout. Packet tags encode 1–128 bytes: bit 7 selects repetition
+of the following byte, otherwise the next bytes are literal; bits 6:0 hold
+the decoded length minus one.
 
 The converter pads and centers the image within 12x18 tiles; the driver displays those
 tiles at 4x scale. The supplied logo appears as 328x256 pixels inside a
@@ -104,7 +111,8 @@ using the high-resolution logo from page 3 of the official
 as a reference. Adafruit retains its logo and trademark rights.
 
 The startup background and one-second duration are in `src/app/monitor.c`.
-No vendor bitmap, compressed logo block or runtime decompressor is needed.
+The converter and small runtime packet decoder are original source in this
+repository; no vendor bitmap or compressed logo block is required.
 
 ## No-signal screen
 

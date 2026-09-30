@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // USB-controlled HSTX HDMI audio/DDC tester. Reuses the RP2040 host.py CLI.
 // The display needs its own power. HDMI DDC uses GPIO2/3 through the HSTX
-// adapter. Video is 640x480 with a pixel-doubled RGB565 framebuffer.
+// adapter. Video is 640x480 or 800x480 with a doubled RGB565 framebuffer.
 
 #include <Adafruit_DVI_Audio.h>
 #include <pico_hdmi/hstx_pins.h>
@@ -37,8 +37,8 @@ void setup() {
   delay(250);
 
   if (watchdog_hw->scratch[0] == MODE_COOKIE &&
-      watchdog_hw->scratch[1] == 640) {
-    videoWidth = 640;
+      (watchdog_hw->scratch[1] == 640 || watchdog_hw->scratch[1] == 800)) {
+    videoWidth = watchdog_hw->scratch[1];
   }
   // A normal reset or a stalled video startup returns to programming mode.
   watchdog_hw->scratch[0] = 0;
@@ -47,7 +47,11 @@ void setup() {
     // Adafruit 22-pin adapter: clock, data0, data1, data2; positive/negative.
     const pico_hdmi_hstx_pinout_t pins = {
         {14, 15}, {{18, 19}, {16, 17}, {12, 13}}};
-    display = new (displayStorage) Adafruit_DVI_Audio_GFX16();
+    dvi_audio_mode_t mode = DVI_AUDIO_640X480;
+    if (videoWidth == 800) {
+      mode = DVI_AUDIO_800X480;
+    }
+    display = new (displayStorage) Adafruit_DVI_Audio_GFX16(mode);
     if (!video_output_set_hstx_pinout(&pins) || !display->begin(48000)) {
       printError("HSTX video startup failed; rebooting to mode off");
       Serial.flush();
@@ -58,7 +62,7 @@ void setup() {
       sine[i] = (int16_t)(sinf(i * 2 * PI / 48) * TONE_AMPLITUDE);
     }
     drawPattern("bars");
-    // begin() changes clk_sys to 252 MHz. Core 1 starts only after it succeeds.
+    // begin() selects 252 MHz (640) or 315 MHz (800). Start core 1 afterward.
     __dmb();
     videoReady = true;
     watchdog_disable();
@@ -302,7 +306,7 @@ void processCommand(char *line) {
       Serial.print("off\",\"framebuffer\":\"none");
     }
     Serial.print("\",\"panel_timing\":");
-    Serial.print("false");
+    Serial.print(videoWidth == 800 ? "true" : "false");
     Serial.print(",\"isp_active\":");
     // Recover the actual RTD state even if the Feather itself has rebooted.
     // An absent or unresponsive RTD is unknown, never a false running claim.
@@ -425,7 +429,7 @@ void processCommand(char *line) {
     printResult(flash.resetChip());
   } else if (!strcmp(cmd, "pattern")) {
     if (!display) {
-      printError("Video is off; use mode 640");
+      printError("Video is off; use mode 640 or mode 800");
     } else if (!arg1 || !drawPattern(arg1)) {
       printError("Unknown pattern");
     } else {
@@ -434,11 +438,12 @@ void processCommand(char *line) {
   } else if (!strcmp(cmd, "mode")) {
     if (flash.active()) {
       printError("Finish the ISP session before changing video mode");
-    } else if (!arg1 || (strcmp(arg1, "640") && strcmp(arg1, "off"))) {
-      printError("HSTX mode must be 640 or off; 800 and panel are unsupported");
+    } else if (!arg1 || (strcmp(arg1, "640") && strcmp(arg1, "800") &&
+                        strcmp(arg1, "panel") && strcmp(arg1, "off"))) {
+      printError("HSTX mode must be 640, 800, panel or off");
     } else {
       watchdog_hw->scratch[0] = MODE_COOKIE;
-      watchdog_hw->scratch[1] = atoi(arg1);
+      watchdog_hw->scratch[1] = !strcmp(arg1, "panel") ? 800 : atoi(arg1);
       Serial.println("{\"ok\":true,\"rebooting\":true}");
       Serial.flush();
       delay(100);

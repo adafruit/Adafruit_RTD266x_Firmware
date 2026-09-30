@@ -106,7 +106,34 @@ def icons():
     return result
 
 
+def zero_runs(data):
+    """Literal nonzero bytes; zero followed by a count encodes zero runs."""
+    encoded = bytearray()
+    offset = 0
+    while offset < len(data):
+        value = data[offset]
+        offset += 1
+        encoded.append(value)
+        if value == 0:
+            count = 1
+            while offset < len(data) and data[offset] == 0 and count < 255:
+                count += 1
+                offset += 1
+            encoded.append(count)
+    # Independent expansion checks the entire stream, including runs crossing
+    # glyph boundaries. Host register tests compare firmware output with the
+    # uncompressed reference retained below, byte for byte.
+    expanded = bytearray()
+    stream = iter(encoded)
+    for value in stream:
+        expanded.extend(bytes(next(stream)) if value == 0 else bytes([value]))
+    assert expanded == bytes(data)
+    return encoded
+
+
 def header(cells):
+    packed = [pack(cell) for cell in cells]
+    encoded = zero_runs(bytes(value for cell in packed for value in cell))
     lines = [
         "// SPDX-License-Identifier: OFL-1.1",
         "// Copyright 2015 The Roboto Mono Project Authors.",
@@ -121,13 +148,21 @@ def header(cells):
         "#define MENU_FONT_FIRST 32", "#define MENU_FONT_COUNT 95",
         "#define MENU_FONT_WIDTH 12", "#define MENU_FONT_HEIGHT 18",
         "#define MENU_FONT_BPP 2", "#define MENU_FONT_BYTES 54", "",
-        "static const uint8_t MENU_FONT_CODE menu_font[MENU_FONT_COUNT][MENU_FONT_BYTES] = {",
+        "/* Lossless zero-run stream: nonzero literals; 0,count repeats zero. */",
+        "static const uint8_t MENU_FONT_CODE menu_font_rle[] = {",
     ]
-    for code, cell in enumerate(cells, FIRST):
+    for offset in range(0, len(encoded), 16):
+        lines.append("  " + ", ".join(f"0x{byte:02x}" for byte in encoded[offset:offset + 16]) + ",")
+    lines.extend([
+        "};", "", "/* Original bytes for independent host renderer checks only. */",
+        "#ifdef MENU_FONT_REFERENCE",
+        "static const uint8_t MENU_FONT_CODE menu_font[MENU_FONT_COUNT][MENU_FONT_BYTES] = {",
+    ])
+    for code, cell in enumerate(packed, FIRST):
         name = "space" if code == 32 else repr(chr(code))
-        lines.append("  {" + ", ".join(f"0x{byte:02x}" for byte in pack(cell))
+        lines.append("  {" + ", ".join(f"0x{byte:02x}" for byte in cell)
                      + "}, /* " + str(code) + " " + name + " */")
-    return "\n".join(lines + ["};", "", "#endif", ""])
+    return "\n".join(lines + ["};", "#endif", "", "#endif", ""])
 
 
 def icon_header(art):
@@ -189,7 +224,9 @@ def main():
     args.icons_output.write_text(icon_header(art), encoding="ascii", newline="\n")
     if args.preview:
         preview(cells, art, args.preview)
-    print(f"Wrote {len(cells)} glyphs, {len(cells) * 54} bytes to {args.output}")
+    raw = bytes(value for cell in cells for value in pack(cell))
+    print(f"Wrote {len(cells)} glyphs, {len(raw)} raw / "
+          f"{len(zero_runs(raw))} compressed bytes to {args.output}")
     print(f"Wrote {len(art)} icons, {len(art) * 4 * 54} bytes to {args.icons_output}")
 
 

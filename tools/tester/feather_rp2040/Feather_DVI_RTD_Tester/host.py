@@ -605,6 +605,10 @@ def vcp_set(client, code, value):
         raise TesterError("VCP value must be 0..65535")
     packet = ddc_packet(bytes((0x03, code)) + value.to_bytes(2, "big"))
     client.ddc_write(packet)
+    # Reset reapplies several hardware blocks. Let it finish before another
+    # Set/Get pair can accumulate in the monitor's small receive FIFO.
+    if code == 0x04 and value == 1:
+        time.sleep(1.0)
     # Set VCP has no application-level response. Report only the bus ACK;
     # use Get VCP (or menu-state after a key) to observe the resulting state.
     return {"operation": "vcp-set", "code": f"0x{code:02X}", "value": value,

@@ -7,6 +7,36 @@ from pathlib import Path
 from PIL import Image, UnidentifiedImageError
 
 
+def pack_tiles(data):
+    """Lossless packets: low 7 bits are length minus one; bit 7 repeats a byte.
+
+    Literal packets store 1..128 following bytes. Repeat packets store one byte
+    to output 3..128 times. No tile, plane or word boundary changes the stream.
+    """
+    packed = bytearray()
+    offset = 0
+    while offset < len(data):
+        count = 1
+        while offset + count < len(data) and data[offset + count] == data[offset] and count < 128:
+            count += 1
+        if count >= 3:
+            packed.extend((0x80 | (count - 1), data[offset]))
+            offset += count
+        else:
+            start = offset
+            offset += count
+            while offset < len(data) and offset - start < 128:
+                count = 1
+                while offset + count < len(data) and data[offset + count] == data[offset] and count < 3:
+                    count += 1
+                if count >= 3:
+                    break
+                offset += min(count, 128 - (offset - start))
+            packed.append(offset - start - 1)
+            packed.extend(data[start:offset])
+    return packed
+
+
 def convert(source, output, symbol="splash"):
     with Image.open(source) as image:
         if image.format != "BMP":
@@ -83,7 +113,8 @@ def convert(source, output, symbol="splash"):
         " * Pixel data retains the artwork's license; see assets/README.md.",
         " * Black is transparent index 0; rows are padded to whole bytes.",
         " * 1-bit pixels are MSB first; 4-bit pixels use the high nibble first.",
-        " * Tiles are centered 12x18 bitplanes, low palette bit first, ready for OSD SRAM.",
+        " * Tiles are centered 12x18 bitplanes, low palette bit first, losslessly packed.",
+        " * Packet low 7 bits: length minus one; bit 7: repeat next byte, else literals.",
         " */",
         "#ifndef RTD_SPLASH_BITMAP_H",
         "#define RTD_SPLASH_BITMAP_H",
@@ -92,14 +123,16 @@ def convert(source, output, symbol="splash"):
         f"#define SPLASH_BITMAP_HEIGHT {height}u",
         f"#define SPLASH_BITMAP_BPP {bpp}u",
         f"#define SPLASH_PALETTE_COLORS {len(palette)}u",
+        f"#define SPLASH_TILE_BYTES {len(tiles)}u",
         "",
         "static const OSD_CODE uint8_t splash_palette[][3] = {",
     ]
     for color in palette:
         lines.append("    {" + ", ".join(f"0x{value:02x}" for value in color) + "},")
     lines.extend(["};", "", "static const OSD_CODE uint8_t splash_tiles[] = {"])
-    for start in range(0, len(tiles), 12):
-        lines.append("    " + ", ".join(f"0x{value:02x}" for value in tiles[start:start + 12]) + ",")
+    packed = pack_tiles(tiles)
+    for start in range(0, len(packed), 12):
+        lines.append("    " + ", ".join(f"0x{value:02x}" for value in packed[start:start + 12]) + ",")
     lines.extend(["};", "", "#ifndef __SDCC_mcs51",
                   "/* Row-major source retained for host verification only. */",
                   "static const OSD_CODE uint8_t splash_bitmap[] = {"])

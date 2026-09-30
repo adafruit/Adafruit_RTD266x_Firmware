@@ -17,7 +17,11 @@ enum {
   MENU_AUDIO,
   MENU_DISPLAY,
   MENU_SETTINGS,
-  MENU_SIGNAL
+  MENU_SIGNAL,
+  MENU_COLOR,
+  MENU_OSD,
+  MENU_SYSTEM,
+  MENU_RESET
 };
 enum {
   SET_BRIGHTNESS,
@@ -31,6 +35,16 @@ enum {
   SET_MENU_TIMEOUT,
   SET_VOLUME,
   SET_MUTE,
+  SET_RED,
+  SET_GREEN,
+  SET_BLUE,
+  SET_SATURATION,
+  SET_SHARPNESS,
+  SET_OSD_X,
+  SET_OSD_Y,
+  SET_OSD_ALPHA,
+  SET_SLEEP_MINUTES,
+  SET_LANGUAGE, /* Reserved at English=0 until translated glyphs are supported. */
   SET_COUNT
 };
 
@@ -41,6 +55,12 @@ void control_key(uint8_t key);
 void control_service(uint32_t now);
 uint8_t control_setting(uint8_t setting);
 uint8_t control_power(void);
+/* Return and clear soft-power transitions and wake requests, including off then
+ * on between monitor polls. An on request also wakes no-signal backlight sleep
+ * when soft power was already on; repeated off requests do not set the flag. */
+uint8_t control_power_changed(void);
+/* Burn-in is a transient panel color test; reset or power off cancels it. */
+uint8_t control_burn_in(void);
 uint8_t control_menu_open(void);
 /* Return and clear notification that the application overlay needs restoring.
  */

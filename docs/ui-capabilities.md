@@ -13,7 +13,8 @@ one second after uploading its tiles before acquiring input video.
 timing generator running independently of input sync during this interval.
 
 `tools/bmp_to_header.py` prepares one-bit or four-bit 12x18 tiles during the
-build. `src/rtd/osd.c` uploads those bytes and builds a row/character map in
+build and compresses them with lossless run/literal packets. `src/rtd/osd.c`
+expands those packets directly into the OSD data port and builds a row/character map in
 OSD SRAM. `osd_show_splash()` and `osd_show_no_signal()` each load and show their
 own bitmap and palette; `osd_hide()` removes the overlay. The application owns
 the full-screen background and handover to video. Each show initializes the OSD,
@@ -57,32 +58,79 @@ followed by unobstructed video after expiry.
 ## Live menu and artwork preview
 
 The normal firmware implements Picture, Audio, Display and Menu Settings menus,
-plus a No Signal submenu. A left icon rail selects the four categories; Menu
+plus Color, No Signal, OSD Setup, System and reset-confirmation pages.
+A left icon rail selects the four categories; Menu
 opens the selected category's controls. Within a page, Menu enters/leaves
 adjustment; up/down move selection or change a value. Back leaves adjustment,
 returns to the icon rail, or closes the menu from the rail.
+Nested Back returns to the exact parent row. Menu Settings has seven rows in a
+five-row viewport; moving down to System or Back reveals the final rows.
+English is the only menu language; translated menus and font coverage are
+deferred.
 The RP2350 tester can send these events over DDC/CI while video runs. Physical
 key decoding remains pending. The [DDC/CI reference](ddcci.md) documents commands,
 setting values and menu-state readback. The earlier menu implementation's six
 live pages, virtual navigation, editing and setting readback passed
 [bench validation](ddcci.md#transport-and-validation);
 picture, aspect, mute and backlight off/wake also passed the checks recorded there.
+Controller host tests cover the added pages, pagination, VCP bounds, setting
+calls, reset confirmation, timer wrap and persistence. On 2026-09-30, v40 bench
+checks passed the added pages, pagination, reset Cancel, top-right placement,
+maximum background transparency, one-minute sleep/wake and the complete burn-in
+cycle and exit. v43 passed immediate factory-reset readback of nineteen defaults
+and sharpness readbacks at 50 ms spacing. Camera comparison at sharpness 0/100
+showed a modest edge change in Fill mode, without image calibration. v44 passed
+saturation and forced-aspect geometry checks on native 800x480/525-line input.
+See the dated
+[bench details](ddcci.md#transport-and-validation).
 
 Picture's `Image brightness` changes pixel values. Display's `LED backlight`
 is disabled and shows a gray `--`: PWM1 requests for 100%, 25% and 0% were
 accepted, but three camera captures showed no visible brightness change.
-Contrast, audio mute, Keep/Fill aspect and the runtime options below are wired
-to the shared settings controller. Volume provides 0–100% linear amplitude;
+Contrast, audio mute, aspect and the runtime options below are wired
+to the shared settings controller. Picture now also offers a Color submenu
+with independent red/green/blue gain and saturation, plus horizontal sharpness.
+Each ranges from 0–100 with neutral/default 50. Sharpness below 50 softens the
+horizontal filter; above 50 sharpens it. Volume provides 0–100% linear amplitude;
 rotation and mirror remain disabled pending a qualified panel control path.
 The separate P6.4/pin54 backlight power gate passed physical off/wake checks.
+Keep and Fill are always available. `ASPECT_4_3=1` and `ASPECT_16_9=1`, both
+enabled by default, add their respective forced ratios. The 16:9 build showed
+the complete 640x480 grid, including all fifteen rows, in an 800x450 viewport;
+input off/on recovery and bottom-positioned menus also passed. With v44 and
+native 800x480/525-line input, Keep retained the complete grid, forced 4:3
+retained all 25 columns, 15 rows and both borders in a centered 640-pixel image
+with 80-pixel sidebars, and forced 16:9 retained the full image in an 800x450
+letterbox. Input off/on restored forced 4:3. CVT 4:3 still needs a physical
+check; CVT 16:9 deliberately falls back to Keep. Native-800 audio continuity
+is under investigation separately from these geometry checks. Unsupported current
+timings fall back to Keep while retaining the preference, and DDC readback
+reports the effective aspect.
 
-Live menus use a centered 360x216 panel at native 1x size, with a thin outline,
+v44's corrected saturation precision showed luminance bars at 0, reduced
+chroma at 25 and the original colors at 50, with the DDC sweep passing. Gray
+ramps at 0/100 were broadly preserved with a common camera/panel blue cast;
+this is a functional check rather than color calibration. Saturation-100
+arithmetic is host tested; maximal primaries clip at that setting.
+
+Live menus use a 360x216 panel at native 1x size, centered by default, with a thin outline,
 dark navy body, title and four original category icons in a left rail. Each icon occupies four
 12x18 glyphs, producing a 24x36 panel-pixel image. Blue backgrounds
 mark focused icons or selected control rows; the active category turns cyan
 when focus moves to its controls. Unavailable controls keep gray labels and
 values. Values align at the right edge; percentage controls have a track below
 the rows, and the footer changes to cyan during adjustment.
+OSD Setup adds horizontal and vertical position from 0–100, with 50 centered,
+and background transparency from 0–100. Horizontal positions follow four-pixel
+hardware steps. Transparency selects eight blend levels from opaque to 7/8
+video while foreground text remains opaque. These preferences affect only the
+live menu; splash, no-signal artwork and timing-popup placement stay unchanged.
+
+System contains a 0–120-minute sleep timer, transient burn-in test and factory
+reset. Reset opens a confirmation with Cancel selected; Back cancels as well.
+Confirming restores all preferences, including the build-time splash default,
+then returns to System. Its normal deferred EEPROM save preserves those defaults
+for the next boot. The DDC reset command performs the same action directly.
 
 Twelve rows of 30 map entries occupy words `0x010..0x177`, below the font base
 at `0x180`. The shared cache contains 122 two-bit glyphs: 95 text characters,
@@ -172,8 +220,8 @@ pixel on each side and four above and below. Each OSD row and the global frame
 request 2x scale, producing a 328x256 logo within a 336x288 rectangle. The
 row map starts at SRAM word zero, character selections at word `0x010`, and
 fonts at word `0x180`; they do not overlap. The 28 tiles occupy 756 bytes of
-dedicated OSD SRAM, not 8051 XRAM. Those tile bytes and a six-byte RGB palette
-are stored in flash. Host tests also receive the original 704-byte row-major
+dedicated OSD SRAM, not 8051 XRAM. The tile stream occupies 456 compressed bytes
+in flash, alongside a six-byte RGB palette. Host tests also receive the original 704-byte row-major
 bitmap; the 8051 build excludes that reference copy.
 
 Four-bit palette tiles occupy 36 words each: four consecutive one-bit planes,
@@ -201,18 +249,31 @@ physical P6 input readback on the stock code's P6.6/P6.7 I2C pair. Hardware
 saves and restoration of ten changed preferences passed a whole-chip reset
 with application XRAM cleared; physical power-disconnect testing remains
 pending. Cooperative saves service DDC between completed bus transactions,
-preserving a snapshot while later changes queue for another save. The release
+preserving a snapshot while later changes queue for another save. The v39 release
 passed rapid DDC reads and continuous audio during saving; a newer menu volume
 change during a save also restored after reset. See the
 [storage qualification and diagnostic interface](ddcci.md#settings-storage).
+The expanded 21-byte payload preserves the old eleven-byte prefix. Existing
+records restore those preferences and use defaults for new controls; the next
+save migrates atomically without enlarging the reservation. Unknown record
+formats remain protected. Host legacy-migration checks pass. On v43, ten
+nondefault settings in the expanded record restored after whole-chip reset:
+RGB gains, sharpness, saturation, OSD X/Y/transparency, volume and aspect mode
+3. This is not an actual board power-removal test; that check and physical
+legacy-record migration qualification remain separate.
 
 | Setting | Choices | Default |
 | --- | --- | --- |
+| RGB gains / Saturation / H Sharpness | 0–100 each | 50 |
+| OSD H/V position | 0–100 across the visible panel | 50 centered |
+| OSD Transparency | 0–100, mapped to eight blend levels | 0 opaque |
 | Startup Splash | Off / On, at startup and soft-power resume | Build-time `SPLASH` value until a preference is saved |
 | Connection Popup | Off / On | On |
 | Menu Timeout | Never / 5 / 10 / 20 seconds | 10 seconds |
 | No Signal Background | Black / Blue / Test bitmap | Test bitmap |
-| No Signal Sleep After | Never / 1 / 2 / 5 / 10 / 20 seconds | Never |
+| No Signal Sleep After | Never / 1 / 2 / 5 / 10 / 20 / 30 / 40 / 50 / 60 seconds | Never |
+| Sleep (minutes) | Off / 1–120 minutes, independent of signal | Off |
+| Burn-in | Off / On; not persisted | Off after reset or power transition |
 
 Saved preferences restore before the startup splash. With `SETTINGS=0`, reset
 restores the build-time `SPLASH` default. The same runtime setting controls
@@ -222,19 +283,38 @@ valid video is acquired. An open menu postpones sleep and requests its backlight
 on. The P6.4 gate visibly switched the backlight off on expiry and restored it
 when valid video returned, while `D6` stayed on. The test selected a two-second
 timeout after signal had already been absent longer than that; it did not
-precisely time the delay from initial loss. `Never` disables automatic sleep.
+precisely time the delay from initial loss. `Never` disables no-signal sleep.
+The newer v41 check displayed the compressed no-signal artwork and confirmed
+physical backlight off with the 30-second no-signal timeout selected.
+
+The separate minute-based sleep timer enters soft power off even with valid
+input or an open menu. Its saved interval starts at boot, when the timer is set,
+or when soft power resumes. It requires a power-key event or DDC power-on to
+resume; valid input alone wakes only no-signal sleep. Host tests cover expiry
+across the millisecond-counter wrap and a full new interval after resume.
+
+Burn-in is a panel test that cycles red, green, blue, white and black every two
+seconds using the free-running background. It stops input audio and video but
+keeps menu/DDC control active. Turning it off reacquires input. It is never
+saved, and reset, factory reset or a soft-power transition clears it.
 
 ## Hardware capability and verification boundary
 
 | Control | Hardware basis | Project status |
 | --- | --- | --- |
 | Full-screen startup | Free-running display background plus a centered bitmap | One-second hold after bitmap upload; input video is enabled afterward |
-| Text menus | Row and character maps, 12x18 two-bit glyphs, 16-color palette, transparent background | Current 12-row icon rail, category navigation and editing host/bench tested; physical keys pending |
+| Text menus | Row and character maps, 12x18 two-bit glyphs, 16-color palette, transparent background | Original icon rail/font plus v40 added submenus, pagination and reset Cancel bench tested; physical keys pending |
 | Small graphic splash | 1-, 2- or 4-bit tiles in dedicated OSD SRAM, with shared palette and window effects | Automatic BMP conversion; one-bit or four-bit tiles, 15 visible colors plus transparency, 4x scale |
 | Video brightness | Per-channel RGB additive coefficients, separate from backlight power | Live 0–100 control; setting 75 visibly lifted black to gray, then restored to neutral 50 |
 | Video contrast | Per-channel RGB multiplicative coefficients | Live 0–100 control; setting 25 visibly darkened the picture, then restored to neutral 50 |
+| RGB gains and saturation | Per-channel gain and color conversion coefficients | Live 0–100 controls, neutral 50; v44 saturation 0/25/50 and DDC sweep passed; gray ramp broadly preserved at 0/100, not color calibration |
+| Horizontal sharpness | Programmable horizontal scaler filter | v43 immediate readbacks at 0/100/50 passed; Fill camera comparison showed a modest edge change, not calibrated image quality |
+| OSD position and transparency | Frame delay and background blending controls | v40 top-right position and transparency 100 bench checks passed |
+| Forced aspect | Scaler geometry and timing paths, enabled by default | 16:9 qualified on 640x480; v44 native 800x480 Keep/4:3/16:9 complete-grid checks and 4:3 input recovery passed; CVT 4:3 untested, CVT 16:9 falls back to Keep |
+| Sleep timer / factory reset | Shared controller and existing soft-power/EEPROM paths | v40 60-second intentional sleep and DDC wake passed; v43 immediate reset readback returned nineteen checked defaults |
+| Burn-in | Free-running solid-color background | v40 physical RGB/white/black cycle at two-second intervals and exit passed |
 | Audio volume | HDMI manual digital gain before I2S | Live 0–100 amplitude control; 50% and 25% measured approximately -6 dB and -12 dB relative to 100% |
-| Persistent preferences | Separate 24LC16B EEPROM, two records with CRC and commit-last marker | Enabled by default; ten changed preferences restored after whole-chip reset; physical power-disconnect test pending |
+| Persistent preferences | Separate 24LC16B EEPROM, two records with CRC and commit-last marker | v43 restored ten nondefault expanded preferences after whole-chip reset; legacy migration host-tested; actual power-disconnect test pending |
 | Backlight level | Six 12-bit PWM channels and multiplexed output pins | Disabled; PWM1 requests at 100/25/0% produced unchanged brightness in three camera captures; VCP `10` unsupported and omitted from capabilities |
 | Backlight power | Stock button toggles P6.4/pin 54 through `0xFFCB` bit 0 | Physical off/on and no-signal sleep/wake verified; level dimming remains unavailable |
 | One or five buttons | GPIO and ADC key-sensing inputs are available | Stock UC-586 main polls pin 53 and toggles pin 54; ADC ladder code is also present but not evidence of connected keys |

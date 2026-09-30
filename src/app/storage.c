@@ -64,14 +64,20 @@ static uint8_t read_during_save(uint16_t address) {
 }
 
 uint8_t store_load(uint8_t *values, uint8_t count) {
+  return store_load_compatible(values, count, 0);
+}
+
+uint8_t store_load_compatible(uint8_t *values, uint8_t count,
+                              uint8_t previous_count) {
   uint8_t slot, found = 0, foreign_schema = 0;
+  uint8_t known_schema;
   uint16_t candidate;
   writable = 1;
   current_slot = 1;
   sequence = 0xffff;
   loaded_count = count;
   state = STORE_UNAVAILABLE;
-  if (!count || count > STORE_PAYLOAD_MAX) {
+  if (!count || count > STORE_PAYLOAD_MAX || previous_count >= count) {
     writable = 0;
     return 0;
   }
@@ -81,13 +87,15 @@ uint8_t store_load(uint8_t *values, uint8_t count) {
       writable = 0;
       return 0;
     }
+    known_schema = ours() && record[4] == 1 &&
+        (record[5] == count || (previous_count && record[5] == previous_count));
     /* Unknown versions are retained for a newer firmware, even with a valid
      * magic. Do not turn downgrading firmware into a destructive migration. */
-    if (!blank() && !(ours() && record[4] == 1 && record[5] == count))
+    if (!blank() && !known_schema)
       writable = 0;
-    if (ours() && (record[4] != 1 || record[5] != count))
+    if (ours() && !known_schema)
       foreign_schema = 1;
-    if (!valid(count))
+    if (!known_schema || !valid(record[5]))
       continue;
     candidate = (uint16_t)record[6] | ((uint16_t)record[7] << 8);
     if (!found || (uint16_t)(candidate - sequence) < 0x8000u) {
@@ -102,11 +110,15 @@ uint8_t store_load(uint8_t *values, uint8_t count) {
     writable = 1;
   if (found) {
     if (!board_eeprom_read(STORE_ADDRESS + current_slot * STORE_SLOT_SIZE,
-                           record, STORE_SLOT_SIZE) || !valid(count)) {
+                           record, STORE_SLOT_SIZE) ||
+        !(record[5] == count || (previous_count && record[5] == previous_count)) ||
+        !valid(record[5])) {
       writable = 0;
       return 0;
     }
-    memcpy(values, record + 8, count);
+    /* Added fields retain the caller's defaults. The next save uses count,
+     * writes the other slot, and preserves this legacy record until commit. */
+    memcpy(values, record + 8, record[5]);
   }
   state = found ? STORE_LOADED : writable ? STORE_EMPTY : STORE_UNAVAILABLE;
   return found;

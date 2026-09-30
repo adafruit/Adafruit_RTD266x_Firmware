@@ -34,6 +34,15 @@ void rtd_write(uint8_t page, uint8_t reg, uint8_t value) {
   mcu_write(0xf5, value);
 }
 
+void rtd_write_bytes(uint8_t page, uint8_t reg, const uint8_t *values,
+                     uint8_t count) {
+  if (!count) return;
+  select_register(page, reg);
+  do {
+    mcu_write(0xf5, *values++);
+  } while (--count);
+}
+
 void rtd_update(uint8_t page, uint8_t reg, uint8_t mask, uint8_t value) {
   rtd_write(page, reg, (rtd_read(page, reg) & (uint8_t)~mask) | (value & mask));
 }

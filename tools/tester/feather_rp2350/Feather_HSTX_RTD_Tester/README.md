@@ -9,8 +9,21 @@ physical I2C1. HSTX positive/negative pairs are clock 14/15, data0 18/19,
 data1 16/17 and data2 12/13.
 
 Install the Adafruit DVI Audio and Adafruit GFX libraries and the Arduino-Pico
-RP2040/RP2350 board package. Leave CPU speed at its default 150 MHz. Video
-mode uses the library's 252 MHz clock; programming mode stays at 150 MHz.
+RP2040/RP2350 board package. This tester requires the 800x480 library extension
+in [adafruit-dvi-audio-800x480.patch](../adafruit-dvi-audio-800x480.patch), based on
+Adafruit_DVI_Audio commit `b56ea9b3a76056ebad6ac3ea43b44bc99fe74e9d`.
+In a library checkout at that revision, apply it before compiling:
+
+```powershell
+git -C C:/path/to/Adafruit_DVI_Audio apply C:/path/to/Adafruit_RTD266x_Firmware/tools/tester/feather_rp2350/adafruit-dvi-audio-800x480.patch
+```
+
+The patch retains the library's existing 640x480 API and adds a selectable
+800x480 canvas/timing. It includes changes to the vendored HDMI timing and
+InfoFrame code; the original third-party attribution remains intact.
+Leave CPU speed at its default 150 MHz. Mode 640 uses 252 MHz/1.15 V; mode 800
+uses 315 MHz/1.20 V. The 315 MHz overclock is experimental and needs qualification
+on each RP2350 board. Programming mode stays at 150 MHz.
 
 From this sketch directory, compile with PowerShell:
 
@@ -29,13 +42,23 @@ Use the existing host CLI from `../../feather_rp2040/Feather_DVI_RTD_Tester/`:
 python host.py --serial YOUR_FEATHER_USB_SERIAL info
 python host.py --serial YOUR_FEATHER_USB_SERIAL mode 640
 python host.py --serial YOUR_FEATHER_USB_SERIAL pattern grid
+python host.py --serial YOUR_FEATHER_USB_SERIAL mode 800
+python host.py --serial YOUR_FEATHER_USB_SERIAL pattern grid
 python host.py --serial YOUR_FEATHER_USB_SERIAL mode off
 ```
 
 Normal boot defaults to `off`. Mode changes reboot the Feather; wait for USB
-to reconnect. Only `off` and `640` are supported; `800` and `panel` are rejected.
-Mode 640 displays a 320x240 RGB565 canvas doubled to 640x480 and transmits a
-1 kHz stereo tone at 48 kHz, amplitude 1000. The low amplitude leaves recording
+to reconnect. Modes are `off`, `640`, and `800`; `panel` aliases `800`.
+Mode 640 displays a 320x240 RGB565 canvas doubled to 640x480. Mode 800 displays
+a 400x240 canvas doubled to 800x480 with 1000x525 totals and a 31.5 MHz pixel
+clock. Its horizontal front porch/sync/back porch are 112/48/40 pixels;
+vertical values are 13/3/29 lines, with both sync signals negative. This is
+the RTD panel timing profile, not PicoDVI's 992x500 CVT profile. HDMI AVI uses
+VIC 0 with unspecified aspect; audio clock recovery derives from the actual
+HSTX clock. Both modes transmit a
+1 kHz stereo tone at 48 kHz, amplitude 1000. Use **mode 640 for audio testing**:
+800-mode audio is experimental and failed the continuity check below.
+The low amplitude leaves recording
 headroom at the USB microphone input used on the bench. Patterns match the
 RP2040 tester.
 
@@ -51,7 +74,7 @@ state after an MCU-only restart; a whole-chip reset restored live DDC operation.
 ## Live DDC/CI controls
 
 With RTD firmware that implements DDC/CI, use these shared host commands in
-either `mode 640` or `mode off`. They talk to I2C address `0x37` while the RTD
+any mode. They talk to I2C address `0x37` while the RTD
 firmware runs; they do not enter ISP or reset either board.
 
 ```powershell
@@ -108,3 +131,11 @@ video and audio. The display's headphone jack produced a measured 1000.0 Hz
 tone; source off/on muted and restored it. The 640x480 grid filled the panel.
 Both source audio channels carry the same tone, so this does not test stereo
 separation. Verify DDC and matching backups on each board before programming.
+
+On 2026-09-30, the 800x480 source displayed the complete grid with Keep, 4:3
+and 16:9 selected: 4:3 compressed it to 640 pixels wide, and 16:9 displayed
+it at 800x450. Source off/on restored video. However, 800-mode audio had
+periodic mutes and pops and failed continuity. Returning to 640 restored a
+continuous 1 kHz tone at volume 50; all 20 analysis windows were between
+-21.441 and -21.412 dBFS. See the [audio measurements](../../../../docs/audio.md#validation)
+for the comparison. The cause of the 800-mode audio failure is unresolved.

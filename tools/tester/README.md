@@ -5,7 +5,7 @@ here alongside the display firmware. A checkout of this repository contains
 both sides of the programming connection.
 
 - [Feather RP2350 HSTX](feather_rp2350/Feather_HSTX_RTD_Tester/README.md):
-  640x480 HDMI video with a 48 kHz audio test tone, live DDC/CI controls and flash
+  640x480 or 800x480 HDMI video with a 48 kHz audio test tone, live DDC/CI controls and flash
   programming through the same HDMI cable and Adafruit HSTX-to-DVI adapter.
 - [Feather RP2040 DVI](feather_rp2040/Feather_DVI_RTD_Tester/README.md):
   640x480 and 800x480 video patterns, plus flash programming.

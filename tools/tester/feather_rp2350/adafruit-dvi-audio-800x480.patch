@@ -1,0 +1,325 @@
+diff --git a/README.md b/README.md
+index 5446feb..c6cd89b 100644
+--- a/README.md
++++ b/README.md
+@@ -6,7 +6,8 @@ play the audio. Built for emulators and demos on the Adafruit Fruit Jam.
+ 
+ This is a thin Arduino wrapper around
+ [fliperama86/pico_hdmi](https://github.com/fliperama86/pico_hdmi), vendored
+-unmodified in `src/pico_hdmi/` (tag v0.0.19).
++in `src/pico_hdmi/` (tag v0.0.19), with a startup-selectable 800x480 timing
++extension in this checkout.
+ 
+ ## Supported
+ 
+@@ -18,6 +19,17 @@ unmodified in `src/pico_hdmi/` (tag v0.0.19).
+     each line.
+ - Audio: 48 kHz, 16-bit stereo.
+ 
++An optional `DVI_AUDIO_800X480` mode uses a 400x240 RGB565 canvas (187.5 KiB)
++or an 800-pixel scanline callback. The timing is 1000x525 total at 60 Hz,
++with a 31.5 MHz pixel clock, negative HSYNC/VSYNC and VIC 0. Its aspect metadata
++is unspecified because 800x480 is neither the CTA 4:3 nor 16:9 format.
++Construct `Adafruit_DVI_Audio_GFX16 dvi(DVI_AUDIO_800X480);`, or call
++`dvi.begin(scanline, 48000, DVI_AUDIO_800X480)` for the callback class.
++The default constructor and two-argument callback `begin()` retain 640x480.
++Select the mode before starting core 1; changing it requires a reboot.
++This mode sets clk_sys to 315 MHz and the core regulator to 1.20 V; the
++315 MHz overclock is experimental and is not qualified on every RP2350 board.
++
+ ## RP2040 and PIO DVI
+ 
+ This library needs an RP2350 with an HSTX DVI port. It does not work on
+@@ -31,7 +43,7 @@ shows one way to do it.
+ 
+ ## Before you start
+ 
+-- **Leave Tools > CPU Speed at 150 MHz.** `begin()` sets 252 MHz itself.
++- **Leave Tools > CPU Speed at 150 MHz.** `begin()` sets 252 MHz itself for 640x480.
+   252 MHz is a multiple of 12 MHz and gives the exact 25.2 MHz pixel clock.
+ - **Core 1 belongs to the library.** Call `runCore1()` from `setup1()`; it
+   never returns.
+diff --git a/src/Adafruit_DVI_Audio.cpp b/src/Adafruit_DVI_Audio.cpp
+index 5fec5cd..da57055 100644
+--- a/src/Adafruit_DVI_Audio.cpp
++++ b/src/Adafruit_DVI_Audio.cpp
+@@ -11,40 +11,53 @@
+ 
+ // Canvas being scanned out; read on core 1 from the scanline IRQ.
+ static const uint16_t *canvas_pixels;
++static uint16_t canvas_width;
+ 
+-// Doubles one 320-pixel canvas row into a 640-pixel output line, and each
++// Doubles one 320/400-pixel canvas row into a 640/800-pixel output line, and each
+ // canvas row into two output lines.
+ static void __not_in_flash_func(canvas_scanline)(uint32_t v_scanline,
+                                                  uint32_t active_line,
+                                                  uint32_t *dst) {
+   (void)v_scanline;
+-  const uint16_t *src = canvas_pixels + (active_line >> 1) * 320;
+-  for (int i = 0; i < 320; i++) {
++  const uint16_t *src = canvas_pixels + (active_line >> 1) * canvas_width;
++  for (int i = 0; i < canvas_width; i++) {
+     uint32_t p = src[i];
+     dst[i] = p | (p << 16);
+   }
+ }
+ 
++/**
++ * @brief Allocate a half-resolution canvas for the selected output timing.
++ * @param mode 640x480 (320x240 canvas) or 800x480 (400x240 canvas).
++ */
++Adafruit_DVI_Audio_GFX16::Adafruit_DVI_Audio_GFX16(dvi_audio_mode_t mode)
++    : GFXcanvas16(mode == DVI_AUDIO_800X480 ? 400 : 320, 240), _mode(mode) {}
++
+ bool Adafruit_DVI_Audio_GFX16::begin(uint32_t sample_rate) {
+   canvas_pixels = getBuffer();
++  canvas_width = width();
+   if (!canvas_pixels) {
+     return false;
+   }
+-  return Adafruit_DVI_Audio::begin(canvas_scanline, sample_rate);
++  return Adafruit_DVI_Audio::begin(canvas_scanline, sample_rate, _mode);
+ }
+ 
+-bool Adafruit_DVI_Audio::begin(ScanlineCallback cb, uint32_t sample_rate) {
++bool Adafruit_DVI_Audio::begin(ScanlineCallback cb, uint32_t sample_rate,
++                               dvi_audio_mode_t mode) {
+   if (!cb) {
+     return false;
+   }
+   _sample_rate = sample_rate;
+-  vreg_set_voltage(VREG_VOLTAGE_1_15);
++  bool wide = mode == DVI_AUDIO_800X480;
++  vreg_set_voltage(wide ? VREG_VOLTAGE_1_20 : VREG_VOLTAGE_1_15);
+   delay(10);
+-  if (!set_sys_clock_khz(DVI_AUDIO_SYS_KHZ, false)) {
++  if (!set_sys_clock_khz(wide ? DVI_AUDIO_800_SYS_KHZ : DVI_AUDIO_SYS_KHZ,
++                         false)) {
+     return false;
+   }
+   hstx_di_queue_init();
+-  video_output_init(MODE_H_ACTIVE_PIXELS, MODE_V_ACTIVE_LINES);
++  video_output_set_800x480(wide);
++  video_output_init(wide ? 800 : 640, 480);
+   pico_hdmi_set_audio_sample_rate(sample_rate);
+   video_output_set_scanline_callback(cb);
+   _ready = true;
+diff --git a/src/Adafruit_DVI_Audio.h b/src/Adafruit_DVI_Audio.h
+index 048da73..0664cfa 100644
+--- a/src/Adafruit_DVI_Audio.h
++++ b/src/Adafruit_DVI_Audio.h
+@@ -15,6 +15,12 @@ extern "C" {
+ #include "pico_hdmi/video_output.h"
+ }
+ 
++/** @brief Output timing selected before starting either core. */
++typedef enum {
++  DVI_AUDIO_640X480, /**< 640x480, 800x525 totals, 25.2 MHz pixel clock. */
++  DVI_AUDIO_800X480  /**< 800x480, 1000x525 totals, 31.5 MHz pixel clock. */
++} dvi_audio_mode_t;
++
+ /*!
+  * @brief DVI video from a per-line callback, plus audio. No framebuffer.
+  */
+@@ -22,19 +28,21 @@ class Adafruit_DVI_Audio {
+ public:
+   /*!
+    * @brief Called on core 1 for every active line (active_line 0-479).
+-   *        line_buffer takes 640 RGB565 pixels packed two per word. Must be
+-   *        fast; keep it in RAM with __not_in_flash_func.
++   *        line_buffer takes 640 or 800 RGB565 pixels, two per word.
++   *        Keep this fast and in RAM with __not_in_flash_func.
+    */
+   typedef video_output_scanline_cb_t ScanlineCallback;
+ 
+   /*!
+-   * @brief Core 0. Sets clk_sys to 252 MHz, sets up video and audio. Call
+-   *        before setup1() reaches runCore1().
++   * @brief Core 0. Sets clk_sys to 252 or 315 MHz and starts video/audio.
++   *        Call before setup1() reaches runCore1().
+    * @param cb Scanline callback that draws each active line.
+    * @param sample_rate Audio sample rate in Hz.
++   * @param mode Output timing. Changing mode requires a reboot.
+    * @return false if cb is null or the clock could not be set.
+    */
+-  bool begin(ScanlineCallback cb, uint32_t sample_rate = 48000);
++  bool begin(ScanlineCallback cb, uint32_t sample_rate = 48000,
++             dvi_audio_mode_t mode = DVI_AUDIO_640X480);
+ 
+   /*!
+    * @brief Core 1. Call from setup1(); waits for begin(), then never returns.
+@@ -69,15 +77,14 @@ private:
+ };
+ 
+ /*!
+- * @brief Adafruit_DVI_Audio with a 320x240 RGB565 GFX canvas (150 KB), shown
+- *        pixel-doubled to 640x480.
++ * @brief RGB565 GFX canvas, pixel-doubled from 320x240 or 400x240.
+  */
+ class Adafruit_DVI_Audio_GFX16 : public Adafruit_DVI_Audio, public GFXcanvas16 {
+ public:
+   /*!
+    * @brief Create the canvas object. The canvas is allocated here.
+    */
+-  Adafruit_DVI_Audio_GFX16(void) : GFXcanvas16(320, 240) {}
++  Adafruit_DVI_Audio_GFX16(dvi_audio_mode_t mode = DVI_AUDIO_640X480);
+ 
+   /*!
+    * @brief Start video and audio, showing the canvas.
+@@ -85,4 +92,7 @@ public:
+    * @return false if the canvas could not be allocated or begin() failed.
+    */
+   bool begin(uint32_t sample_rate = 48000);
++
++private:
++  dvi_audio_mode_t _mode; /**< Output timing selected by the constructor. */
+ };
+diff --git a/src/dvi_audio_config.h b/src/dvi_audio_config.h
+index 4ec7686..78b91b5 100644
+--- a/src/dvi_audio_config.h
++++ b/src/dvi_audio_config.h
+@@ -17,4 +17,5 @@
+ // clk_sys runs at 252 MHz (a multiple of 12 MHz, so PIO USB host still
+ // works). HSTX = 252 / 2 = 126 MHz, pixel clock 126 / 5 = 25.2 MHz.
+ #define DVI_AUDIO_SYS_KHZ 252000
++#define DVI_AUDIO_800_SYS_KHZ 315000
+ #define MODE_HSTX_CLK_DIV 2
+diff --git a/src/pico_hdmi/hstx_packet.c.inc b/src/pico_hdmi/hstx_packet.c.inc
+index c452bf4..ea59b51 100644
+--- a/src/pico_hdmi/hstx_packet.c.inc
++++ b/src/pico_hdmi/hstx_packet.c.inc
+@@ -298,6 +298,17 @@ void hstx_packet_set_avi_infoframe_aspect(hstx_packet_t *packet, uint8_t vic, ui
+     compute_all_parity(packet);
+ }
+ 
++void hstx_packet_clear_avi_aspect(hstx_packet_t *packet)
++{
++    // 800x480 has no CTA VIC or representable 4:3/16:9 picture ratio.
++    // A=0 and M=0 leave the sink to measure the explicitly timed raster.
++    packet->subpacket[0][0] = 0;
++    packet->subpacket[0][1] &= (uint8_t)~0x10;
++    packet->subpacket[0][2] = 0;
++    compute_infoframe_checksum(packet);
++    compute_all_parity(packet);
++}
++
+ // SPD InfoFrame: type 0x83, version 1, 25 payload bytes -- PB1..PB8 vendor,
+ // PB9..PB24 product, PB25 Source Device Information. Payload byte n lives at
+ // subpacket[n / 7][n % 7] (PB0 is the checksum), the same layout
+diff --git a/src/pico_hdmi/hstx_packet.h b/src/pico_hdmi/hstx_packet.h
+index 7f4fe3f..ab52df9 100644
+--- a/src/pico_hdmi/hstx_packet.h
++++ b/src/pico_hdmi/hstx_packet.h
+@@ -41,6 +41,9 @@ void hstx_packet_set_audio_infoframe(hstx_packet_t *packet, uint32_t sample_rate
+ void hstx_packet_set_avi_infoframe(hstx_packet_t *packet, uint8_t vic, uint8_t pixel_repetition);
+ void hstx_packet_set_avi_infoframe_aspect(hstx_packet_t *packet, uint8_t vic, uint8_t pixel_repetition,
+                                           bool aspect_16_9);
++
++/** Clear picture/active aspect metadata for a non-CTA timing, fixing checksum and parity. */
++void hstx_packet_clear_avi_aspect(hstx_packet_t *packet);
+ // SPD (Source Product Description) InfoFrame, CTA-861: an 8-character vendor
+ // name, a 16-character product description and a Source Device Information
+ // code. Sinks show them as the input's name/icon; some also pick a game or PC
+diff --git a/src/pico_hdmi/video_output.c.inc b/src/pico_hdmi/video_output.c.inc
+index 42845f6..15366a2 100644
+--- a/src/pico_hdmi/video_output.c.inc
++++ b/src/pico_hdmi/video_output.c.inc
+@@ -107,7 +107,7 @@ volatile uint32_t video_frame_count = 0;
+ // Some monitors have trouble syncing with HDMI Data Islands
+ static bool dvi_mode = false; // Default to HDMI mode (full features with audio)
+ 
+-static uint16_t PICO_HDMI_LINE_BUFFER_ATTR line_buffer[MODE_H_ACTIVE_PIXELS] __attribute__((aligned(4)));
++static uint16_t PICO_HDMI_LINE_BUFFER_ATTR line_buffer[MODE_H_ACTIVE_PIXELS > 800 ? MODE_H_ACTIVE_PIXELS : 800] __attribute__((aligned(4)));
+ static uint32_t v_scanline = 2;
+ static bool vactive_cmdlist_posted = false;
+ static bool dma_pong = false;
+@@ -157,6 +157,55 @@ static uint32_t vactive_line_dvi[] = {
+     HSTX_CMD_RAW_REPEAT | MODE_H_SYNC_WIDTH,  SYNC_V1_H0, HSTX_CMD_NOP,
+     HSTX_CMD_RAW_REPEAT | MODE_H_BACK_PORCH,  SYNC_V1_H1, HSTX_CMD_TMDS | MODE_H_ACTIVE_PIXELS};
+ 
++// Arduino's two 480-line timings share sync polarity, 525 total lines and
++// HSYNC data-island placement. Keep selected values in RAM for the line IRQ.
++// The DVI command lists above retain constant initialization for the default.
++static uint16_t selected_h_front = MODE_H_FRONT_PORCH;
++static uint16_t selected_h_sync = MODE_H_SYNC_WIDTH;
++static uint16_t selected_h_back = MODE_H_BACK_PORCH;
++static uint16_t selected_h_active = MODE_H_ACTIVE_PIXELS;
++static uint16_t selected_v_front = MODE_V_FRONT_PORCH;
++static uint16_t selected_v_sync = MODE_V_SYNC_WIDTH;
++static uint16_t selected_v_back = MODE_V_BACK_PORCH;
++static bool selected_800x480;
++
++void video_output_set_800x480(bool enabled)
++{
++    selected_800x480 = enabled;
++    selected_h_front = enabled ? 112 : 16;
++    selected_h_sync = enabled ? 48 : 96;
++    selected_h_back = enabled ? 40 : 48;
++    selected_h_active = enabled ? 800 : 640;
++    selected_v_front = enabled ? 13 : 10;
++    selected_v_sync = enabled ? 3 : 2;
++    selected_v_back = enabled ? 29 : 33;
++    vblank_line_vsync_off[0] = vblank_line_vsync_on[0] =
++        vactive_line_dvi[0] = HSTX_CMD_RAW_REPEAT | selected_h_front;
++    vblank_line_vsync_off[3] = vblank_line_vsync_on[3] =
++        vactive_line_dvi[3] = HSTX_CMD_RAW_REPEAT | selected_h_sync;
++    vblank_line_vsync_off[6] = vblank_line_vsync_on[6] =
++        HSTX_CMD_RAW_REPEAT | (selected_h_back + selected_h_active);
++    vactive_line_dvi[6] = HSTX_CMD_RAW_REPEAT | selected_h_back;
++    vactive_line_dvi[8] = HSTX_CMD_TMDS | selected_h_active;
++}
++
++// Only this implementation substitutes runtime geometry. Public constants
++// still describe the default mode used by existing 640-pixel callbacks.
++#undef MODE_H_FRONT_PORCH
++#undef MODE_H_SYNC_WIDTH
++#undef MODE_H_BACK_PORCH
++#undef MODE_H_ACTIVE_PIXELS
++#undef MODE_V_FRONT_PORCH
++#undef MODE_V_SYNC_WIDTH
++#undef MODE_V_BACK_PORCH
++#define MODE_H_FRONT_PORCH selected_h_front
++#define MODE_H_SYNC_WIDTH selected_h_sync
++#define MODE_H_BACK_PORCH selected_h_back
++#define MODE_H_ACTIVE_PIXELS selected_h_active
++#define MODE_V_FRONT_PORCH selected_v_front
++#define MODE_V_SYNC_WIDTH selected_v_sync
++#define MODE_V_BACK_PORCH selected_v_back
++
+ static uint32_t vactive_di_ping[128], vactive_di_pong[128], vactive_di_null[128];
+ static uint32_t vblank_di_ping[128], vblank_di_pong[128], vblank_di_null[128];
+ static uint32_t vblank_di_len, vblank_di_null_len;
+@@ -743,13 +792,14 @@ void video_output_init(uint16_t width, uint16_t height)
+     // The compile-time timing profile owns its matching CEA VIC. In
+     // particular, 720p50 must advertise VIC 19 rather than masquerading as
+     // the otherwise geometrically similar 720p60 VIC 4 mode.
+-    uint8_t vic = MODE_CEA_VIC;
++    uint8_t vic = selected_800x480 ? 0 : MODE_CEA_VIC;
+ #if defined(VIDEO_MODE_320x240) && !PICO_HDMI_LEGACY_240P_AVI_INFOFRAME
+     uint8_t pixel_repetition = 3;
+ #else
+     uint8_t pixel_repetition = 0;
+ #endif
+     hstx_packet_set_avi_infoframe_aspect(&packet, vic, pixel_repetition, MODE_AVI_ASPECT_16_9 != 0);
++    if (selected_800x480) hstx_packet_clear_avi_aspect(&packet);
+     hstx_encode_data_island(&island, &packet, false, DI_HSYNC_ACTIVE);
+     vblank_avi_infoframe_len = build_line_with_di(vblank_avi_infoframe, island.words, false, false);
+ 
+diff --git a/src/pico_hdmi/video_output.h b/src/pico_hdmi/video_output.h
+index 31dd584..68f73ef 100644
+--- a/src/pico_hdmi/video_output.h
++++ b/src/pico_hdmi/video_output.h
+@@ -191,6 +191,12 @@ typedef const uint32_t *(*video_output_scanline_ptr_cb_t)(uint32_t v_scanline, u
+  */
+ void video_output_init(uint16_t width, uint16_t height);
+ 
++/** Select 800x480/1000x525 timing, or restore 640x480/800x525.
++ * Call before video_output_init(), with HSTX and core 1 stopped.
++ * Both timings use negative sync and place audio islands inside HSYNC.
++ */
++void video_output_set_800x480(bool enabled);
++
+ /**
+  * Register the scanline callback.
+  */
