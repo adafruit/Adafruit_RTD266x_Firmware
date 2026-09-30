@@ -10,6 +10,7 @@
 #include "rtd/platform.h"
 #include "rtd/video.h"
 #include "rtd/storage.h"
+#include "rtd/firmware_crc.h"
 
 /* Exercise real application policy with observable hardware and OSD calls.
  * Analog image quality and physical key debounce belong to board tests. */
@@ -38,6 +39,9 @@ static struct {
 #define TEST_ASPECT_MAX (RTD_ASPECT_16_9 ? 3 : RTD_ASPECT_4_3 ? 2 : 1)
 
 uint32_t platform_millis(void) { return clock_ms; }
+uint8_t platform_code_read(uint16_t address) { return (uint8_t)address; }
+uint8_t platform_vendor_probe_available(void) { return 1; }
+uint8_t platform_vendor_probe_read(uint16_t address) { return (uint8_t)address; }
 uint8_t store_load(uint8_t *values, uint8_t count) {
   assert(count == SET_COUNT);
   assert(!saved_present || saved_count == count);
@@ -1049,6 +1053,32 @@ static void test_persistence(void) {
 #endif
 }
 
+static void test_firmware_crc_vcp(void) {
+  uint16_t maximum, value, i;
+  unsigned previous_saves = saves;
+  assert(control_get(0xf6, &maximum, &value) && maximum == 2 && value == 0);
+  assert(!control_get(0xf7, &maximum, &value));
+  assert(!control_set(0xf6, 0) && !control_set(0xf6, 3));
+  assert(control_set(0xf6, 1) && !control_set(0xf6, 1));
+  assert(control_get(0xf6, &maximum, &value) && value == 1);
+  for (i = 0; i < 1024; ++i) firmware_crc_service();
+  assert(control_get(0xf6, &maximum, &value) && value == 2);
+  assert(control_get(0xf7, &maximum, &value) && value == 0xe6a1);
+  assert(control_get(0xf8, &maximum, &value) && value == 0xb11d);
+  assert(control_get(0xf9, &maximum, &value) && maximum == 256 && value == 256);
+  assert(!control_set(0xf7, 0) && !control_set(0xf8, 0) && !control_set(0xf9, 0));
+  assert(control_get(0xfa, &maximum, &value) && maximum == 2 && value == 1);
+  assert(!control_set(0xfa, 2));
+  assert(control_set(0xf6, 2));
+  for (i = 0; i < 128; ++i) firmware_crc_service();
+  assert(control_get(0xf6, &maximum, &value) && value == 2);
+  assert(control_get(0xf7, &maximum, &value) && value == 0x5307);
+  assert(control_get(0xf8, &maximum, &value) && value == 0xb667);
+  assert(control_get(0xf9, &maximum, &value) && maximum == 32 && value == 32);
+  assert(control_get(0xfa, &maximum, &value) && maximum == 2 && value == 2);
+  assert(saves == previous_saves);
+}
+
 int main(void) {
   test_navigation();
   test_rail_previews_settings();
@@ -1067,6 +1097,7 @@ int main(void) {
   test_sleep_and_burn_in();
   test_factory_reset_persistence();
   test_persistence();
+  test_firmware_crc_vcp();
   puts("Control: menus, color/style, reset, VCP bounds, power/sleep, burn-in and persistence pass");
   return 0;
 }

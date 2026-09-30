@@ -213,10 +213,19 @@ From `tools/tester/feather_rp2040/Feather_DVI_RTD_Tester`, use the shared
 `host.py` for either Feather:
 
 ```sh
+python host.py restore-protection /path/to/current-verified.bin \
+  --status 0x1c --allow-write --receipt protection.json
 python host.py program /path/to/firmware-full.bin \
   --backup /path/to/current-verified.bin --allow-write --receipt program.json
 python host.py reset-chip
 ```
+
+For the supported UC-586/W25X40, enable whole-flash protection (`0x1C`) before
+installing fresh firmware. The first command verifies every byte against the
+current backup before changing protection. Settings use the separate EEPROM.
+Partial protection (`0x0C`) allowed intermittent retained-vendor-byte changes
+during ISP release or early execution on this board; the exact writer remains
+unresolved. Keep full protection enabled between programming sessions.
 
 The backup must match the image currently installed, which is the original
 only on the first run. The programmer compares the complete current image,
@@ -226,6 +235,8 @@ restart retained DDC peripheral state on the bench, and a whole-chip reset
 restored the live interface. Run it before returning the tester to video mode.
 Keep unexpected readbacks before making further changes. The retained flash
 tail is not linked into the new program and is not a settings-storage area.
+Once CRC-capable firmware is installed, [live CRC and `program --fast`](tools/tester/README.md#firmware-crc-and-faster-bank0-updates)
+can verify the 64 KiB application bank without a final full-flash readback.
 
 ## Validation status
 

@@ -13,8 +13,10 @@ jobs:
         splash: [0, 1]
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y sdcc make gcc python3-pil
+      - run: sudo apt-get update && sudo apt-get install -y sdcc make gcc python3-pil python3-serial
       - run: make -j2 SPLASH=${{ matrix.splash }} check
+      - if: matrix.splash == 1
+        run: python3 tools/tester/feather_rp2040/Feather_DVI_RTD_Tester/test_firmware_crc.py
       - if: matrix.splash == 1
         run: make -j2 OUT=build/color-test SPLASH_BMP=tests/color_splash.bmp NO_SIGNAL_BMP=assets/splash.bmp check
       - uses: actions/upload-artifact@v4

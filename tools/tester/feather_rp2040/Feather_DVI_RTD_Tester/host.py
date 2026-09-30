@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import time
+import zlib
 
 import serial
 from serial.tools import list_ports
@@ -27,6 +28,10 @@ from serial.tools import list_ports
 DEFAULT_SERIAL = None
 SECTOR_SIZE = 4096
 PAGE_SIZE = 256
+BANK_SIZE = 65536
+FULL_IMAGE_SIZE = 512 * 1024
+CRC_REGIONS = {"bank0": (1, 0, BANK_SIZE),
+               "vendor-probe": (2, BANK_SIZE, 8192)}
 PATTERNS = ("bars", "checker", "red", "green", "blue", "gray", "black",
             "white", "grid", "text")
 VIRTUAL_KEYS = {"menu": 1, "back": 2, "up": 4, "down": 8, "power": 16}
@@ -426,8 +431,14 @@ def ddc_config(client):
     return read_session(client, action)
 
 
-def program_flash(client, target, backup, recover=False):
+def program_flash(client, target, backup, recover=False, fast=False):
     """Program only changed sectors. On any write failure, stay in ISP."""
+    if fast and recover:
+        raise TesterError("--fast cannot be combined with --recover; use full verification")
+    if fast and (len(target) != FULL_IMAGE_SIZE or len(backup) != FULL_IMAGE_SIZE):
+        raise TesterError("Fast programming requires full 512 KiB target and backup images")
+    if fast and target[BANK_SIZE:] != backup[BANK_SIZE:]:
+        raise TesterError("Fast programming requires identical target/backup tails after bank0")
     if recover and target != backup:
         raise TesterError("Recovery target must exactly equal the verified backup; "
                           "finish/reset NOT attempted")
@@ -436,6 +447,20 @@ def program_flash(client, target, backup, recover=False):
         raise TesterError("Programming requires video off; use 'mode off' first "
                           "and reconnect. ISP/finish/reset NOT attempted.")
     was_active = hello["isp_active"]
+    preflight_crc = None
+    if fast:
+        if was_active:
+            raise TesterError("Fast programming requires live firmware with ISP inactive; "
+                              "use full verification without --fast")
+        try:
+            preflight_crc = read_firmware_crc(client, region="bank0")
+        except TesterError as error:
+            raise TesterError("Fast CRC preflight failed before ISP: " + str(error) +
+                              "; use full verification without --fast") from error
+        expected_crcs = {zlib.crc32(backup[:BANK_SIZE]), zlib.crc32(target[:BANK_SIZE])}
+        if int(preflight_crc["crc32"], 16) not in expected_crcs:
+            raise TesterError("Live bank0 CRC matches neither backup nor target; "
+                              "ISP/erase/program NOT attempted")
     entered = False
     write_started = False
     failed_sector = None
@@ -446,12 +471,18 @@ def program_flash(client, target, backup, recover=False):
         info["isp_active_at_entry"] = was_active
         if len(target) != info["size"] or len(backup) != info["size"]:
             raise TesterError("Target and backup must exactly match the flash capacity")
-        current = client.read_flash(info["size"], progress=progress("Preflight"))
-        if not recover and current != backup and current != target:
+        if fast and (info["jedec"].upper() != "EF3013" or info["status"] & 0x1c != 0x1c):
+            raise TesterError("Fast programming requires W25X40 (EF3013) with whole-flash "
+                              "protection (status & 0x1c == 0x1c). Use normal full "
+                              "verification and restore full protection before --fast; "
+                              "unlock/erase/program NOT attempted")
+        verify_size = BANK_SIZE if fast else info["size"]
+        current = client.read_flash(verify_size, progress=progress("Preflight bank0" if fast else "Preflight"))
+        if not recover and current != backup[:verify_size] and current != target[:verify_size]:
             raise TesterError("Current flash matches neither backup nor target. "
                               "For a partial failed image, use --recover with "
                               "the verified backup as both image and --backup.")
-        sectors = [address for address in range(0, len(target), SECTOR_SIZE)
+        sectors = [address for address in range(0, verify_size, SECTOR_SIZE)
                    if current[address:address + SECTOR_SIZE]
                    != target[address:address + SECTOR_SIZE]]
         pages_written = 0
@@ -471,8 +502,9 @@ def program_flash(client, target, backup, recover=False):
                     pages_written += 1
             actual = client.read_flash(SECTOR_SIZE, address=address)
             compare(sector, actual, "Programmed sector", base=address)
-        actual = client.read_flash(info["size"], progress=progress("Full readback"))
-        compare(target, actual, "Final full readback")
+        if not fast:
+            actual = client.read_flash(info["size"], progress=progress("Full readback"))
+            compare(target, actual, "Final full readback")
     except Exception as error:
         if write_started:
             raise TesterError(
@@ -490,18 +522,36 @@ def program_flash(client, target, backup, recover=False):
             raise TesterError(f"{error}; ISP cleanup also failed: {cleanup}. "
                               "Protection/ISP state is unconfirmed.") from error
         raise
-    # Only a complete verified image may be allowed to boot. A cleanup failure
-    # must not turn a successful byte comparison into an unsupported claim.
+    # Full mode compares every byte. Fast mode preserves the trusted tail and
+    # verifies bank0's preflight plus every changed sector before booting.
     try:
         finish(client)
     except Exception as error:
         raise TesterError("Image verified, but protection restoration/ISP exit/reset "
                           "was not fully confirmed: " + str(error)) from error
-    return {"operation": "program", "recovery": recover, "verified": True, "flash": info,
+    final_crc = None
+    if fast:
+        try:
+            client.command("reset-chip", timeout=15)
+            time.sleep(3.0)
+            final_crc = firmware_crc(client, target, region="bank0")
+        except Exception as error:
+            raise TesterError("Bank0 ISP checks and protection restoration completed, "
+                              "but post-reset live CRC verification failed: " + str(error) +
+                              "; no additional writes or reset attempted") from error
+    result = {"operation": "program", "recovery": recover, "fast": fast,
+            "verified": True, "verification_scope": "bank0" if fast else "full-flash",
+            "verified_bytes": BANK_SIZE if fast else len(target),
+            "full_image_verified": not fast, "tail_readback": not fast, "flash": info,
             "backup_sha256": sha256(backup), "sha256": sha256(target),
             "size": len(target), "changed_sectors": sectors,
             "pages_written": pages_written, "writes_skipped": not sectors,
             "protection_restored_and_reset": True, "created_utc": timestamp()}
+    if fast:
+        result.update({"preflight_firmware_crc": preflight_crc,
+                       "final_firmware_crc": final_crc,
+                       "tail_basis": "unchanged from supplied verified backup; not read"})
+    return result
 
 
 def restore_protection(port, usb_serial, image, status, receipt):
@@ -615,6 +665,81 @@ def vcp_set(client, code, value):
             "i2c_acknowledged": True, "request": packet.hex()}
 
 
+def read_firmware_crc(client, timeout=120, region="bank0"):
+    """Start one scoped CRC job; never retry failed transfers or restart jobs."""
+    if region not in CRC_REGIONS:
+        raise TesterError("Unknown firmware CRC region; use bank0 or vendor-probe")
+    region_id, address, size = CRC_REGIONS[region]
+    total_pages = size // PAGE_SIZE
+    status = vcp_get(client, 0xf6)
+    if status["maximum"] != 2 or status["current"] not in (0, 1, 2):
+        raise TesterError("Firmware CRC interface returned an invalid status")
+    if status["current"] == 1:
+        raise TesterError("Firmware CRC job is already busy; no new job started")
+    vcp_set(client, 0xf6, region_id)
+    deadline = time.monotonic() + timeout
+    previous_pages = 0
+    observed_busy = False
+    while time.monotonic() < deadline:
+        status = vcp_get(client, 0xf6)
+        if status["maximum"] != 2 or status["current"] not in (1, 2):
+            raise TesterError("Firmware CRC job became idle or returned an invalid status")
+        if status["current"] == 1:
+            observed_busy = True
+        elif not observed_busy:
+            raise TesterError("Firmware CRC new job not observed after start; "
+                              "ready result may be stale, job not retried")
+        progress_value = vcp_get(client, 0xf9)
+        pages = progress_value["current"]
+        if (progress_value["maximum"] != total_pages or
+                not previous_pages <= pages <= total_pages):
+            raise TesterError("Firmware CRC returned invalid or decreasing page progress")
+        previous_pages = pages
+        if status["current"] == 2:
+            if pages != total_pages:
+                raise TesterError(f"Firmware CRC reported ready before all {total_pages} {region} pages")
+            actual_region = vcp_get(client, 0xfa)
+            if actual_region["maximum"] != 2 or actual_region["current"] != region_id:
+                raise TesterError(f"Firmware CRC region mismatch: requested {region} "
+                                  f"({region_id}), reported {actual_region['current']} "
+                                  f"with maximum {actual_region['maximum']}")
+            low = vcp_get(client, 0xf7)
+            high = vcp_get(client, 0xf8)
+            if low["maximum"] != 65535 or high["maximum"] != 65535:
+                raise TesterError("Firmware CRC returned an invalid result width")
+            crc = low["current"] | (high["current"] << 16)
+            return {"operation": "firmware-crc", "scope": region,
+                    "region_id": region_id, "address": address, "size": size, "pages": pages,
+                    "crc32": f"{crc:08x}", "tail_verified": False,
+                    "full_image_verified": False,
+                    "created_utc": timestamp()}
+        time.sleep(0.1)
+    raise TesterError(f"Firmware CRC timed out after {timeout} seconds; job not restarted")
+
+
+def firmware_crc(client, image, timeout=120, region="bank0"):
+    """Compare the selected live flash region with bytes at its image offset."""
+    if region not in CRC_REGIONS:
+        raise TesterError("Unknown firmware CRC region; use bank0 or vendor-probe")
+    if region == "bank0":
+        if len(image) not in (BANK_SIZE, FULL_IMAGE_SIZE):
+            raise TesterError("Firmware CRC requires a 65536-byte bank or 524288-byte image")
+    elif len(image) != FULL_IMAGE_SIZE:
+        raise TesterError("Vendor-probe CRC requires a complete 524288-byte image")
+    _, address, size = CRC_REGIONS[region]
+    expected_bytes = image[address:address + size]
+    expected = zlib.crc32(expected_bytes)
+    result = read_firmware_crc(client, timeout, region=region)
+    if int(result["crc32"], 16) != expected:
+        raise TesterError(f"Firmware {region} CRC mismatch: expected {expected:08x}, "
+                          f"observed {result['crc32']}")
+    result.update({"expected_crc32": f"{expected:08x}", "verified": True,
+                   "region_sha256": sha256(expected_bytes)})
+    if region == "bank0":
+        result["bank0_sha256"] = result["region_sha256"]
+    return result
+
+
 def capture(output, device):
     require_new(output)
     ffmpeg = shutil.which("ffmpeg")
@@ -654,6 +779,10 @@ def argument_parser():
     dump.add_argument("--reads", type=int, default=2)
     verify = sub.add_parser("verify", help="Compare every flash byte with an image")
     verify.add_argument("image", type=Path)
+    crc = sub.add_parser("firmware-crc", help="Verify a selected live flash region CRC without ISP")
+    crc.add_argument("image", type=Path, help="Full 512 KiB image, or 64 KiB image for bank0 only")
+    crc.add_argument("--region", choices=CRC_REGIONS, default="bank0",
+                     help="bank0 (default) or retained vendor bytes 0x010000..0x011FFF")
     program = sub.add_parser("program", help="Program changed sectors and verify every byte")
     program.add_argument("image", type=Path)
     program.add_argument("--backup", type=Path, required=True,
@@ -662,6 +791,8 @@ def argument_parser():
                          help="Explicitly authorize flash erase/program operations")
     program.add_argument("--recover", action="store_true",
                          help="Restore a partial failed image; image must equal --backup")
+    program.add_argument("--fast", action="store_true",
+                         help="Bank0-only update with live CRC; unchanged verified backup tail required")
     program.add_argument("--receipt", type=Path, help="New JSON receipt (default: timestamped)")
     protection = sub.add_parser("restore-protection",
                                 help="Verify a complete image, then recover recorded BP protection")
@@ -750,12 +881,17 @@ def main(argv=None):
                     result = dump_flash(client, args.output, args.reads)
                 elif args.action == "verify":
                     result = verify_flash(client, args.image)
+                elif args.action == "firmware-crc":
+                    if hello.get("isp_active") is not False:
+                        raise TesterError("Live firmware CRC requires confirmed ISP inactive")
+                    result = firmware_crc(client, read_image(args.image), region=args.region)
                 elif args.action == "program":
                     try:
-                        result = program_flash(client, target, backup, recover=args.recover)
+                        result = program_flash(client, target, backup,
+                                               recover=args.recover, fast=args.fast)
                     except Exception as error:
                         write_json_new(receipt, {
-                            "operation": "program", "recovery": args.recover,
+                            "operation": "program", "recovery": args.recover, "fast": args.fast,
                             "verified": False,
                             "error": str(error), "backup": str(args.backup),
                             "backup_sha256": sha256(backup), "target": str(args.image),

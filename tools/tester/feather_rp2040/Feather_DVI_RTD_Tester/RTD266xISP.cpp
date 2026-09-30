@@ -597,7 +597,10 @@ bool RTD266xISP::finish() {
   if (!commonCommand(SPI_WRITE, WRITE_DISABLE, 0, 0, 0, ignored)) {
     return false;
   }
-  if (!readStatus(current) || !statusMatches(current, _originalStatus)) {
+  FlashStatus finalStatus = {};
+  if (!readStatus(finalStatus.value) || finalStatus.bits.busy ||
+      finalStatus.bits.writeEnabled ||
+      !statusMatches(finalStatus.value, _originalStatus)) {
     return fail("Original flash protection was not restored");
   }
   _armed = false;
@@ -638,6 +641,22 @@ bool RTD266xISP::leave() {
   if (!control.bits.ispEnabled || control.bits.resetFlashController) {
     return fail(
         "Flash controller reset release while halted was not confirmed");
+  }
+  // Controller reset follows finish()'s earlier WRDI. Check the flash itself
+  // again at the final handoff, while the MCU is still held in reset. WEL is
+  // intentionally ignored by statusMatches(), so test it explicitly here.
+  if (_identified) {
+    uint32_t ignored;
+    FlashStatus status = {};
+    if (!commonCommand(SPI_WRITE, WRITE_DISABLE, 0, 0, 0, ignored) ||
+        !readStatus(status.value)) {
+      return false;
+    }
+    if (status.bits.busy || status.bits.writeEnabled ||
+        (_statusSaved && !statusMatches(status.value, _originalStatus))) {
+      return fail(
+          "Flash protection or write-disable was not safe for ISP exit");
+    }
   }
   control.value = 0;
   if (!writeRegister(PROGRAM_CONTROL, control.value)) {

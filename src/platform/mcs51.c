@@ -61,6 +61,18 @@ uint32_t platform_millis(void) {
   return snapshot;
 }
 
+uint8_t platform_code_read(uint16_t address) {
+  return *((const __code uint8_t *)address);
+}
+
+uint8_t platform_vendor_probe_available(void) {
+  return mcu_read(0xfd) == 1 && mcu_read(0xfe) == 0;
+}
+
+uint8_t platform_vendor_probe_read(uint16_t offset) {
+  return *((const volatile __xdata uint8_t *)offset);
+}
+
 void platform_delay_ms(uint16_t duration) {
   uint32_t start = platform_millis();
   /* Extra tick covers starting partway through a timer period. */

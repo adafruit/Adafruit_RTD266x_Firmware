@@ -41,8 +41,8 @@ Menus are English-only; translated menus and font coverage are deferred.
 
 Codes below are hexadecimal; values are decimal unless prefixed with `0x`.
 Settings persist in the separate board EEPROM by default (`SETTINGS=1`).
-Use `SETTINGS=0` for session-only preferences. The controller never writes its
-program flash.
+Use `SETTINGS=0` for session-only preferences. Settings writes target only that
+EEPROM; the application has no intentional program-flash write path.
 
 | VCP | Control | Accepted values / readback |
 | --- | --- | --- |
@@ -69,9 +69,13 @@ program flash.
 | `F2` | OSD background transparency | 0–100; default 0 opaque, mapped to eight hardware blend levels |
 | `F3` | Sleep timer | 0 off (default), 1–120 minutes until soft power off |
 | `F4` | Burn-in color test | 0 off (default), 1 on; transient, never saved |
+| `F6` | Flash CRC job | Write 1 for bank0 or 2 for vendor probe; reads 0 idle, 1 busy, 2 ready; maximum 2 |
+| `F7`, `F8` | Firmware CRC result, read-only | Low/high 16 bits respectively, maximum 65535; unavailable until ready |
+| `F9` | Firmware CRC progress, read-only | Completed 256-byte pages; maximum 256 for bank0 or 32 for vendor probe |
+| `FA` | Firmware CRC region, read-only | 0 before a job, 1 bank0, 2 vendor probe; maximum 2 |
 
 The mute and power values follow [ddcutil's MCCS reference](https://www.ddcutil.com/vcpinfo_output/).
-`E0`–`EB` and `F0`–`F4` are project-specific. Reserved `F5` reads English=0
+`E0`–`EB` and `F0`–`F9` are project-specific. Reserved `F5` reads English=0
 with maximum 0, rejects writes and is omitted from the capabilities string.
 LED backlight (`10`) is unsupported and omitted
 from the capabilities string; its menu row is disabled with a gray `--`.
@@ -241,6 +245,75 @@ uses P6.4 (pin 54), `0xFFCB` bit 0, following the stock button's output path.
 The gate's physical backlight-off and wake behavior was verified on the UC-586.
 Limor also confirmed continuity from the boost IC's EN to pin 54 on 2026-09-29.
 This provides on/off control, not adjustable LED brightness.
+
+## Firmware CRC and fast updates
+
+The firmware CRC result matches `zlib.crc32` over one explicitly selected
+flash region. Writing `F6=1` starts code bank0, addresses `0x000000..0x00FFFF`,
+including padding (65,536 bytes, 256 pages). Writing `F6=2` starts the vendor
+probe at `0x010000..0x011FFF` (8,192 bytes, 32 pages). The latter reads the
+first two retained vendor sectors through the firmware's mapped XDATA window;
+it does not cover the remaining retained tail. Neither region includes the
+external settings EEPROM.
+
+Poll Get `F6` for status and `F9` for page progress. When Get `F6` returns 2
+(ready), verify `FA` matches the requested region ID (1 bank0, 2 vendor probe),
+then read low word `F7` and high word `F8`; combine as `(F8 << 16) | F7`.
+The value 2 means vendor probe when written to `F6`, and ready when read.
+A start while busy is rejected, and result words remain unavailable until
+completion. These are runtime operations, not settings or flash writes.
+
+The shared host's `firmware-crc IMAGE` defaults to `--region bank0` and accepts
+a 64 KiB bank or full 512 KiB image. `--region vendor-probe` requires a full
+512 KiB image and compares only the 8 KiB range above. Both have a 120-second
+deadline and report scope, region ID, address and size. The host rejects an
+already-busy job, a ready result without an observed busy state after starting,
+or a mismatched region and never retries failed transfers or
+restarts a timed-out job. A mismatch reports expected and observed CRC values.
+
+`program --fast` always requests bank0 and uses that interface only when current
+firmware is running and supports it, video is off, and supplied full-size
+target/backup tails match.
+ISP must identify W25X40 (`EF3013`) with whole-flash protection
+(`status & 0x1c == 0x1c`) before any unlock or write. Partial protection such
+as `0x0c` requires normal full verification and restoration of full protection
+before fast updates are allowed.
+Before ISP, live CRC must match the backup or target bank. ISP still reads and
+exactly compares bank0, and every changed bank0 sector is read back. After
+protection restoration, ISP exit and whole-chip reset, the host waits three
+seconds and checks the target's live CRC. It skips the final 512 KiB readback
+and explicitly records that the unchanged tail was not read. Full programming
+and recovery remain the defaults; recovery cannot use `--fast`. See the
+[tester workflow](../tools/tester/README.md#firmware-crc-and-faster-bank0-updates)
+for commands and receipt scope.
+
+The UC-586 investigation on 2026-09-30 found intermittent changes in retained
+bank1 with W25X40 protection `0x0C` (only the upper half protected). The live
+probe and ISP readback agreed: an 8 KiB region that matched while halted could
+already differ before the next ISP entry. One replay changed `0x10000` from
+`02` to `00` and `0x10029` from `E8` to `40`; its live CRC remained unchanged
+during a subsequent 45-second wait. This brackets the fault to ISP release or
+early execution, without identifying the writer.
+
+The shared programmer now verifies WIP/WEL clear and protection after its final
+flash-controller reset, before releasing the MCU. That guard is not a proven
+fix: under partial protection, three release cycles passed and the fourth
+changed `0x10000`. Full-flash protection `0x1C` contained the observed fault.
+All diagnosed bytes were restored from the verified backup. Fast updates require
+that full protection; the settings EEPROM remains writable independently.
+
+The byte-table CRC build was installed through `program --fast` on that board:
+16 changed bank0 sectors (246 programmed pages) passed readback, protection
+restoration and post-reset CRC `79CCF2EE`. The update took 139.4 seconds without
+the final 512 KiB readback. Subsequent live checks took 29.8 seconds with the
+source off and 33.7 seconds during 640x480 video. The vendor probe remained
+`6807A515`. During a live checksum, a 53-second analyzed analog capture measured
+a 1000.02 Hz tone at -21.436 dBFS; 50 ms windows ranged from -21.452 to -21.402
+dBFS, with no windows more than 6 dB below the median. The camera confirmed
+color bars with Keep-aspect sidebars. Menu, Down, Up and Back each produced
+the expected menu state while the CRC job reported busy, and its final result
+still matched. These results qualify this UC-586 and
+HSTX tester combination, not other boards or timings.
 
 ## Transport and validation
 

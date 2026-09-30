@@ -5,6 +5,7 @@
 #include "rtd/ddcci.h"
 #include "rtd/diagnostics.h"
 #include "rtd/edid.h"
+#include "rtd/firmware_crc.h"
 #include "rtd/io.h"
 #include "rtd/osd.h"
 #include "rtd/platform.h"
@@ -239,6 +240,7 @@ void main(void) {
      */
     for (audio_tick = 0; audio_tick < 25; ++audio_tick) {
       ddcci_service();
+      firmware_crc_service();
       control_service(platform_millis());
       video_controls_service();
       if (displayed_mode != VIDEO_MODE_NONE)

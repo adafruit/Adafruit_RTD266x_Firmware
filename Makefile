@@ -39,7 +39,7 @@ OUT := $(OUT)-eeprom-diagnostics
 endif
 
 SOURCES := src/platform/io.c src/platform/mcs51.c src/platform/ddc.c \
-           src/platform/diagnostics.c src/platform/ddcci.c src/app/control.c \
+           src/platform/diagnostics.c src/platform/ddcci.c src/app/control.c src/app/firmware_crc.c \
            src/rtd/edid.c src/rtd/video.c src/rtd/osd.c src/rtd/audio.c \
            boards/$(BOARD)/board.c panels/$(PANEL).c src/app/$(APP).c
 ifneq ($(filter 1,$(SETTINGS) $(EEPROM_DIAGNOSTICS)),)
@@ -89,7 +89,7 @@ $(OUT)/firmware.ihx: $(OBJECTS)
 $(OUT)/firmware.bin: $(OUT)/firmware.ihx
 	makebin -s 65536 $< $@
 
-check: firmware build/tests/edid_test $(VIDEO_TEST) $(AUDIO_TEST) $(DDCCI_TEST) $(CONTROL_TEST) build/tests/board_test build/tests/eeprom_test build/tests/storage_test $(OSD_TEST)
+check: firmware build/tests/edid_test $(VIDEO_TEST) $(AUDIO_TEST) $(DDCCI_TEST) $(CONTROL_TEST) build/tests/board_test build/tests/eeprom_test build/tests/storage_test build/tests/firmware_crc_test $(OSD_TEST)
 	python3 tests/bitmap_test.py
 	build/tests/edid_test
 	$(VIDEO_TEST)
@@ -99,6 +99,7 @@ check: firmware build/tests/edid_test $(VIDEO_TEST) $(AUDIO_TEST) $(DDCCI_TEST) 
 	build/tests/board_test
 	build/tests/eeprom_test
 	build/tests/storage_test
+	build/tests/firmware_crc_test
 	$(OSD_TEST)
 
 build/tests/edid_test: tests/edid_test.c src/rtd/edid.c panels/$(PANEL).c $(HEADERS)
@@ -117,9 +118,13 @@ $(DDCCI_TEST): tests/ddcci_test.c src/platform/ddcci.c $(HEADERS) Makefile
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(DEFINES) -Iinclude $< src/platform/ddcci.c -o $@
 
-$(CONTROL_TEST): tests/control_test.c src/app/control.c $(HEADERS) Makefile
+$(CONTROL_TEST): tests/control_test.c src/app/control.c src/app/firmware_crc.c $(HEADERS) Makefile
 	@mkdir -p $(dir $@)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(DEFINES) -Iinclude -Iboards/$(BOARD) $< src/app/control.c -o $@
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(DEFINES) -Iinclude -Iboards/$(BOARD) $< src/app/control.c src/app/firmware_crc.c -o $@
+
+build/tests/firmware_crc_test: tests/firmware_crc_test.c src/app/firmware_crc.c $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Iinclude $< src/app/firmware_crc.c -o $@
 
 build/tests/board_test: tests/board_test.c boards/$(BOARD)/board.c $(HEADERS)
 	@mkdir -p $(dir $@)

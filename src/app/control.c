@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "rtd/control.h"
+#include "rtd/firmware_crc.h"
 #include "rtd/audio.h"
 #include "rtd/board.h"
 #include "rtd/osd.h"
@@ -171,6 +172,8 @@ static uint8_t setting_index(uint8_t code) {
 
 uint8_t control_get(uint8_t code, uint16_t *maximum, uint16_t *value) {
   uint8_t index = setting_index(code);
+  if (code >= 0xf6 && code <= 0xfa)
+    return firmware_crc_get(code, maximum, value);
   if (index < SET_COUNT) {
     if (index == SET_BACKLIGHT && !board_backlight_available()) return 0;
     if (index == SET_VOLUME && !audio_volume_available()) return 0;
@@ -224,6 +227,7 @@ static void queue_save(void) {
 uint8_t control_set(uint8_t code, uint16_t value) {
   uint16_t maximum, old;
   uint8_t index = setting_index(code);
+  if (code == 0xf6) return value <= 2 ? firmware_crc_start((uint8_t)value) : 0;
   if (!control_get(code, &maximum, &old) || value > maximum) return 0;
   if (index < SET_COUNT) {
     if (index == SET_ASPECT) {

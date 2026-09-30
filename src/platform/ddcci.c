@@ -39,7 +39,7 @@ static const DDCCI_CODE char capabilities[] =
 #if RTD_AUDIO_VOLUME
     "62 "
 #endif
-    "8D D6 DF E0 E1 E2 E3 E4 E5 E6 E7 E8 EB F0 F1 F2 F3 F4)"
+    "8D D6 DF E0 E1 E2 E3 E4 E5 E6 E7 E8 EB F0 F1 F2 F3 F4 F6 F7 F8 F9 FA)"
     "mccs_ver(2.2))";
 
 static uint8_t packet[DDCCI_PACKET_BYTES];
