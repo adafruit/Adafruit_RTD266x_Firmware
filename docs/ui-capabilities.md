@@ -34,8 +34,11 @@ disabled. The two images reuse OSD SRAM rather than being resident together.
 black, inset 16 pixels from the top left. It uses native 12x18, two-bit
 antialiased glyphs shown with global 2x zoom; character rows remain 1x. The
 95-character ASCII font includes lowercase, uppercase, digits and punctuation.
-It is rasterized from the bundled OFL Roboto Condensed source, replacing the
-earlier expanded 5x7 alphabet. The [font guide](../assets/fonts/README.md)
+It is rasterized from the bundled OFL Roboto Mono source. This is a
+monospaced design with one shared pen origin and baseline; glyphs are not
+individually centered. It replaces the earlier proportional Roboto Condensed
+glyphs that had been forced into equal-width cells, and the older expanded
+5x7 alphabet. The [font guide](../assets/fonts/README.md)
 documents licensing and deterministic regeneration. The same global zoom
 preserves the bitmap's calibrated frame origin.
 The input overlay lasts three seconds after acquisition when Connection Popup
@@ -86,7 +89,7 @@ at `0x180`. The shared cache contains 122 two-bit glyphs: 95 text characters,
 18 words (54 bytes); the cache ends at `0xA13`. Splash or no-signal bitmap tiles
 invalidate this cache. Four coverage levels select background, two edge colors
 and foreground from the palette. The generated glyphs, original icons and
-renderer pass the host model and the v31 board checks described below.
+renderer pass the host model and board checks described below.
 
 On 2026-09-29, the v31 two-bit font and icon rail were flashed to the UC-586,
 with all 512 KiB verified and protection restored to `0x0C`. Camera captures
@@ -97,6 +100,13 @@ lower icons and footer, so their complete geometry is checked by the decoded
 SRAM previews. Camera colors are not calibrated to the software palette.
 The no-signal bitmap, reloaded input font, three-second timing popup, reopening
 Picture, and ten-second menu expiry also passed. See [bench details](ddcci.md#transport-and-validation).
+
+The subsequent v32 font-only update uses Roboto Mono 17 px/500. Host checks
+pass with the same 5,130-byte glyph table size; full 512 KiB readback matched
+SHA256 `40a1963225cdb296134cabd623f2aabcc132a2411219dfc0606e119dc3aacbfc`,
+and protection returned to `0x0C`. New Picture and Settings photos show readable
+labels and the complete footer. Navigation and the normal ten-second timeout
+setting were checked without changing the menu controller or layout.
 
 The host OSD test can export the rendered SRAM as 800x480 PPM previews,
 without a board or firmware flash. After `make OUT=build/menu-style check`, run

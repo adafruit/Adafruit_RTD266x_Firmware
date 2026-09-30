@@ -12,7 +12,7 @@ analysis and earlier bench experiments with
 clean-room implementation. Hardware facts and unresolved assumptions are
 recorded in [video notes](docs/video-registers.md) and
 [display-control notes](docs/ui-capabilities.md). New source and category icons
-are MIT licensed. The bundled Roboto Condensed font and its generated bitmap
+are MIT licensed. The bundled Roboto Mono font and its generated bitmap
 glyphs are under SIL OFL 1.1; see the [font source and license](assets/fonts/README.md).
 
 ## Build
@@ -63,8 +63,10 @@ Unsupported input keeps its measured settings and the first rejection reason on
 screen. Missing measurements display `--`; disconnected input retains the TV
 test card. These messages do not expand the supported video modes.
 
-Menus and timing messages use native 12×18 antialiased glyphs, with lowercase,
-uppercase, digits and punctuation. Their 2-bpp coverage maps to four palette
+Menus and timing messages use a true monospaced Roboto Mono font in native
+12×18 antialiased cells, with lowercase, uppercase, digits and punctuation.
+The glyphs share one pen origin and baseline, preserving their designed side
+bearings. Their 2-bpp coverage maps to four palette
 colors before the OSD's 2× zoom. Generated font and icon headers are checked in,
 so ordinary firmware builds do not need a font converter. To regenerate them
 and inspect a glyph sheet, run `python tools/font_to_header.py --preview
